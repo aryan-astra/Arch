@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Arch favicon">
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="#06080d"/>
+  <path d="M15 19h34c0 1.8-1.4 3.2-3.2 3.2H18.2A3.2 3.2 0 0 1 15 19Z" fill="#ffffff"/>
+  <rect x="18" y="23.5" width="28" height="3" rx="1.5" fill="#ffffff"/>
+  <path d="M21 28.5h22v17.5h-6.6v-7.4a4.4 4.4 0 1 0-8.8 0V46H21V28.5Z" fill="none" stroke="#ffffff" stroke-width="3.2" stroke-linejoin="round"/>
+  <circle cx="32" cy="33.5" r="2.8" fill="#ffffff"/>
+  <rect x="29.2" y="46" width="1.8" height="9" rx="0.9" fill="#ffffff"/>
+  <rect x="33" y="46" width="1.8" height="9" rx="0.9" fill="#ffffff"/>
+</svg>

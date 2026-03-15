@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta
+      name="description"
+      content="Arch is a fast, compact, mobile-first student portal with installable PWA support."
+    />
+    <meta name="theme-color" content="#000000" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <title>Arch</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      (() => {
+        const RECOVERY_KEY = "arch.shell.recovery.once";
+        window.setTimeout(async () => {
+          const root = document.getElementById("root");
+          if (root && root.childElementCount > 0) {
+            sessionStorage.removeItem(RECOVERY_KEY);
+            return;
+          }
+          if (sessionStorage.getItem(RECOVERY_KEY) === "1") return;
+          sessionStorage.setItem(RECOVERY_KEY, "1");
+          try {
+            if ("serviceWorker" in navigator) {
+              const regs = await navigator.serviceWorker.getRegistrations();
+              await Promise.all(regs.map((reg) => reg.unregister()));
+            }
+            if ("caches" in window) {
+              const keys = await caches.keys();
+              await Promise.all(keys.map((key) => caches.delete(key)));
+            }
+          } catch (error) {
+            console.error("Arch shell recovery failed", error);
+          }
+          window.location.reload();
+        }, 2500);
+      })();
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

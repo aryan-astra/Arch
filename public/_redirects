@@ -1,0 +1,3 @@
+/auth/*  https://arch-a6bm.onrender.com/auth/:splat  200
+/proxy/* https://arch-a6bm.onrender.com/proxy/:splat 200
+/*       /index.html                                 200
