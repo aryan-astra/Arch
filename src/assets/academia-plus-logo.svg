@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Academia ++ logo</title>
+  <desc id="desc">Dark rounded-square icon with a minimal open-book symbol and subtle plus marks.</desc>
+  <defs>
+    <linearGradient id="bg" x1="64" y1="48" x2="448" y2="464" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0C1627"/>
+      <stop offset="0.55" stop-color="#071020"/>
+      <stop offset="1" stop-color="#02050C"/>
+    </linearGradient>
+    <linearGradient id="page" x1="120" y1="128" x2="388" y2="334" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#BFC2E2"/>
+      <stop offset="1" stop-color="#A8ADD4"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="32" y="32" width="448" height="448" rx="108" fill="url(#bg)"/>
+  <rect x="32" y="32" width="448" height="448" rx="108" fill="none" stroke="rgba(255,255,255,0.12)" stroke-width="2"/>
+
+  <path d="M114 132c42 0 80 15 120 42v168c-36-22-76-34-120-34-10 0-18-8-18-18V150c0-10 8-18 18-18z" fill="url(#page)"/>
+  <path d="M398 132c-42 0-80 15-120 42v168c36-22 76-34 120-34 10 0 18-8 18-18V150c0-10-8-18-18-18z" fill="url(#page)"/>
+  <path d="M256 166v170" stroke="#D8DBF4" stroke-width="10" stroke-linecap="round"/>
+
+  <g fill="#D8DBF4">
+    <rect x="332" y="346" width="42" height="8" rx="4"/>
+    <rect x="349" y="329" width="8" height="42" rx="4"/>
+    <rect x="386" y="346" width="42" height="8" rx="4"/>
+    <rect x="403" y="329" width="8" height="42" rx="4"/>
+  </g>
+</svg>

@@ -1,0 +1,766 @@
+// API client — fetches real data from academia.srmist.edu.in via Vite proxy
+// Proxy strips /api prefix and forwards to the target with session cookies
+
+import { BATCH2_TIMETABLE, SLOT_TIMES, ATTENDANCE } from '../data/real-data'
+import type { AttendanceCourse, InternalMark, StudentInfo } from '../data/real-data'
+
+export interface LiveAttendanceResult {
+  student: StudentInfo
+  attendance: AttendanceCourse[]
+  marks: InternalMark[]
+  lastUpdated: string
+}
+
+export interface LiveTimetableResult {
+  student: StudentInfo
+  courses: AttendanceCourse[]
+  lastUpdated: string
+}
+
+// Extracts the inner HTML from Zoho Creator's pageSanitizer.sanitize('...') call
+function extractInnerHtml(outerHtml: string): string {
+  const marker = "pageSanitizer.sanitize('"
+  const startIdx = outerHtml.indexOf(marker)
+  if (startIdx === -1) return outerHtml
+  const contentStart = startIdx + marker.length
+  const contentEnd = outerHtml.indexOf("')", contentStart)
+  if (contentEnd === -1) return outerHtml
+  return outerHtml
+    .substring(contentStart, contentEnd)
+    // Unescape all JavaScript hex sequences first (e.g. \x3C → <, \x3E → >)
+    .replace(/\\x([0-9a-fA-F]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    // Then handle remaining named escapes
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '\t')
+    .replace(/\\r/g, '')
+    .replace(/\\\//g, '/')
+    .replace(/\\-/g, '-')
+}
+
+function normalizeInfoKey(raw: string): string {
+  return raw
+    .replace(/\u00a0/g, ' ')
+    .replace(/[:]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+}
+
+function getAdjacentValue(cells: string[], idx: number): string {
+  const next = cells[idx + 1] ?? ''
+  if (next === ':') return (cells[idx + 2] ?? '').trim()
+  return next.trim()
+}
+
+// Parses the My_Attendance page HTML (data is embedded in a JS pageSanitizer.sanitize() string)
+function parseAttendancePage(html: string): LiveAttendanceResult {
+  const innerHtml = extractInnerHtml(html)
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(innerHtml, 'text/html')
+
+  // Find tables by their header content rather than relying on fragile indices
+  const allTables = Array.from(doc.querySelectorAll('table'))
+
+  const attendance: AttendanceCourse[] = []
+  const marks: InternalMark[] = []
+  const student: StudentInfo = {
+    name: '', regNo: '', program: '', department: '',
+    batch: 0, section: '', semester: 0,
+    mobile: '', advisorName: '', advisorEmail: '', advisorPhone: '',
+    academicAdvisorName: '', academicAdvisorEmail: '', academicAdvisorPhone: '',
+    academicYear: '', enrollmentDate: '',
+  }
+
+  // Find student info table: contains "Registration Number:"
+  const infoTable = allTables.find(t =>
+    t.textContent?.includes('Registration Number:')
+  )
+  if (infoTable) {
+    Array.from(infoTable.querySelectorAll('tr')).forEach(row => {
+      const cells = Array.from(row.querySelectorAll('td'))
+        .map(c => c.textContent?.replace(/\s+/g, ' ').trim() ?? '')
+      for (let i = 0; i < cells.length; i++) {
+        const key = normalizeInfoKey(cells[i] ?? '')
+        if (!key) continue
+        const value = getAdjacentValue(cells, i)
+        if (!value) continue
+
+        if (key.includes('registration number')) student.regNo = value
+        if (key === 'name') student.name = value
+        if (key.includes('program')) student.program = value
+        if (key.includes('department')) student.department = value
+        if (key.includes('section')) student.section = value
+        if (key.includes('semester')) student.semester = parseInt(value, 10) || student.semester
+        if (key === 'batch') student.batch = parseInt(value, 10) || student.batch
+        if (key.includes('mobile')) student.mobile = value.replace(/\s+/g, '')
+        if (key.includes('academic year') || key.includes('academic years')) student.academicYear = value
+
+        if (key.includes('enrollment') || key === 'doe') {
+          const parts = value.split('/').map(p => p.trim()).filter(Boolean)
+          student.enrollmentDate = parts.length > 1 ? parts[parts.length - 1] ?? value : value
+        }
+      }
+    })
+  }
+
+  // Find attendance table: header has "Hours Conducted" and "Attn %"
+  const attendanceTable = allTables.find(t => {
+    const header = t.querySelector('tr')
+    return header?.textContent?.includes('Hours Conducted') && header?.textContent?.includes('Attn')
+  })
+  if (attendanceTable) {
+    const rows = Array.from(attendanceTable.querySelectorAll('tr')).slice(1)
+    rows.forEach(row => {
+      const cells = row.querySelectorAll('td')
+      if (cells.length < 9) return
+      // Course code is first text node (before <br>) inside cells[0]
+      const codeNode = cells[0]?.firstChild
+      const code = (codeNode?.nodeType === 3 ? codeNode.textContent?.trim() : cells[0]?.childNodes[0]?.textContent?.trim()) ?? ''
+      const title = cells[1]?.textContent?.trim() ?? ''
+      // Category column (Theory/Practical)
+      const courseType = cells[2]?.textContent?.trim() ?? 'Theory'
+      const faculty = cells[3]?.textContent?.trim() ?? ''
+      const slot = cells[4]?.textContent?.trim() ?? ''
+      const room = cells[5]?.textContent?.trim() ?? ''
+      const conducted = parseInt(cells[6]?.textContent?.trim() ?? '0', 10)
+      const absent = parseInt(cells[7]?.textContent?.trim() ?? '0', 10)
+      const pct = parseFloat(cells[8]?.textContent?.trim() ?? '0')
+      if (code && code.length > 3) {
+        attendance.push({
+          code,
+          title,
+          type: courseType === 'Practical' ? 'Practical' : 'Theory',
+          faculty,
+          slot,
+          room,
+          conducted,
+          absent,
+          percent: pct,
+          credit: 0,
+          category: courseType,
+        })
+      }
+    })
+  }
+
+  // Find marks table: header has "Test Performance"
+  const marksTable = allTables.find(t => {
+    const header = t.querySelector('tr')
+    return header?.textContent?.includes('Test Performance')
+  })
+  if (marksTable) {
+    const rows = Array.from(marksTable.querySelectorAll('tr')).slice(1)
+    rows.forEach(row => {
+      const cells = row.querySelectorAll('td')
+      if (cells.length < 3) return
+      const code = cells[0]?.textContent?.trim() ?? ''
+      const marksCell = cells[2]
+      if (!marksCell || !code) return
+      // Each test is a nested td with <strong>FT-I/5.00</strong><br>scored
+      marksCell.querySelectorAll('td').forEach(entry => {
+        const strong = entry.querySelector('strong')
+        if (!strong) return
+        const labelText = strong.textContent?.trim() ?? ''
+        const [test, maxStr] = labelText.split('/')
+        const max = parseFloat(maxStr ?? '0')
+        // The scored value is the text node after the <strong> (and after <br>)
+        const allText = entry.textContent?.trim() ?? ''
+        const scoredStr = allText.replace(labelText, '').trim()
+        const scored = parseFloat(scoredStr)
+        if (test && !isNaN(max) && !isNaN(scored)) {
+          marks.push({ courseCode: code, test, max, scored })
+        }
+      })
+    })
+  }
+
+  // If we couldn't parse the student name, something went wrong
+  if (!student.name && !student.regNo) {
+    throw new Error('Could not parse attendance page — HTML structure may have changed')
+  }
+
+  return {
+    student,
+    attendance,
+    marks,
+    lastUpdated: new Date().toISOString(),
+  }
+}
+
+// Session token stored after login
+let _sessionToken: string | null = null
+type SessionPersistence = 'session' | 'local'
+
+export function setSessionToken(token: string | null, persistence: SessionPersistence = 'session') {
+  _sessionToken = token
+  if (token) {
+    if (persistence === 'local') {
+      localStorage.setItem('academia.token', token)
+      sessionStorage.removeItem('academia.token')
+    } else {
+      sessionStorage.setItem('academia.token', token)
+      localStorage.removeItem('academia.token')
+    }
+  } else {
+    sessionStorage.removeItem('academia.token')
+    localStorage.removeItem('academia.token')
+  }
+}
+
+export function getSessionToken(): string | null {
+  if (_sessionToken) return _sessionToken
+  const t = sessionStorage.getItem('academia.token') || localStorage.getItem('academia.token')
+  if (t) _sessionToken = t
+  return t
+}
+
+export async function loginUser(
+  email: string,
+  password: string,
+  opts?: { trusted?: boolean }
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const resp = await fetch('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password, trusted: Boolean(opts?.trusted) }),
+    })
+    const data = await resp.json()
+    if (data.success && data.sessionToken) {
+      setSessionToken(data.sessionToken, opts?.trusted ? 'local' : 'session')
+      return { success: true }
+    }
+    return { success: false, error: data.error || 'Login failed' }
+  } catch {
+    return { success: false, error: 'Network error — is the server running?' }
+  }
+}
+
+export async function logoutUser() {
+  const token = getSessionToken()
+  if (token) {
+    try {
+      await fetch('/auth/logout', {
+        method: 'POST',
+        headers: { 'X-Session-Token': token },
+      })
+    } catch { /* ignore */ }
+  }
+  setSessionToken(null)
+}
+
+// Fetch real attendance data via auth server proxy
+export async function fetchAttendance(): Promise<LiveAttendanceResult> {
+  const token = getSessionToken()
+  if (!token) throw new Error('Not authenticated')
+
+  const resp = await fetch('/proxy/page/My_Attendance', {
+    headers: {
+      'Accept': 'text/html,application/xhtml+xml',
+      'X-Session-Token': token,
+    },
+  })
+  if (resp.status === 401) throw new Error('Session expired — please log in again')
+  if (!resp.ok) throw new Error(`Server error: HTTP ${resp.status}`)
+  const html = await resp.text()
+  return parseAttendancePage(html)
+}
+
+function parseDayOrderFromWelcome(html: string): number | null {
+  const innerHtml = extractInnerHtml(html)
+  const text = innerHtml
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/\s+/g, ' ')
+
+  const dateMatch = /Date\s*[:-]?\s*(\d{1,2})\s*[-/]\s*([A-Za-z]{3})\s*[-/]\s*(\d{2,4})/i.exec(text)
+  if (!dateMatch) return null
+  const monthMap: Record<string, number> = {
+    jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+    jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+  }
+  const day = parseInt(dateMatch[1] ?? '', 10)
+  const month = monthMap[(dateMatch[2] ?? '').toLowerCase()] ?? 0
+  const rawYear = parseInt(dateMatch[3] ?? '', 10)
+  const year = rawYear < 100 ? 2000 + rawYear : rawYear
+  if (!day || !month || !year) return null
+
+  const today = new Date()
+  const isToday =
+    today.getFullYear() === year &&
+    (today.getMonth() + 1) === month &&
+    today.getDate() === day
+  if (!isToday) return null
+
+  // Only trust day order mention near the top date banner, not any later timetable/planner text.
+  const nearDateWindow = text.slice(dateMatch.index, dateMatch.index + 220)
+  const m = nearDateWindow.match(/Day\s*Order\s*[:-]?\s*([1-5])/i)
+  if (!m) return null
+  const parsed = parseInt(m[1] ?? '', 10)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+export async function fetchCurrentDayOrder(): Promise<number | null> {
+  const token = getSessionToken()
+  if (!token) throw new Error('Not authenticated')
+  const resp = await fetch('/proxy/page/WELCOME', {
+    headers: { 'Accept': 'text/html,application/xhtml+xml', 'X-Session-Token': token },
+  })
+  if (resp.status === 401) throw new Error('Session expired — please log in again')
+  if (!resp.ok) throw new Error(`Server error: HTTP ${resp.status}`)
+  return parseDayOrderFromWelcome(await resp.text())
+}
+
+function recordFieldValue(record: Record<string, unknown>, keyPattern: RegExp): string {
+  for (const [key, value] of Object.entries(record)) {
+    if (!keyPattern.test(key)) continue
+    if (!value || typeof value !== 'object') continue
+    const maybeValue = (value as { FIELDVALUE?: unknown }).FIELDVALUE
+    if (typeof maybeValue === 'string' && maybeValue.trim()) return maybeValue.trim()
+  }
+  return ''
+}
+
+export async function fetchProfilePatch(): Promise<Partial<StudentInfo>> {
+  const token = getSessionToken()
+  if (!token) throw new Error('Not authenticated')
+  const resp = await fetch('/proxy/form/Student_Address_Details', {
+    headers: { 'Accept': 'application/json, text/plain, */*', 'X-Session-Token': token },
+  })
+  if (resp.status === 401) throw new Error('Session expired — please log in again')
+  if (!resp.ok) throw new Error(`Server error: HTTP ${resp.status}`)
+
+  const text = await resp.text()
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return {}
+  }
+
+  const record = (parsed as { RECORD?: Record<string, unknown> })?.RECORD
+  if (!record || typeof record !== 'object') return {}
+
+  return {
+    regNo: recordFieldValue(record, /^Registration_Number$/i),
+    section: recordFieldValue(record, /^Section$/i),
+    mobile: recordFieldValue(record, /^Mobile_Number$/i).replace(/\s+/g, ''),
+    academicYear: recordFieldValue(record, /^Academic_Years?$/i),
+    enrollmentDate: recordFieldValue(record, /(Enrollment|DOE)/i),
+    advisorName: recordFieldValue(record, /(Faculty_)?Advisor(_Name)?$/i),
+    advisorEmail: recordFieldValue(record, /(Faculty_)?Advisor.*(Mail|Email)/i),
+    advisorPhone: recordFieldValue(record, /(Faculty_)?Advisor.*(Phone|Mobile|Contact)/i),
+    academicAdvisorName: recordFieldValue(record, /Academic_Advisor(_Name)?$/i),
+    academicAdvisorEmail: recordFieldValue(record, /Academic_Advisor.*(Mail|Email)/i),
+    academicAdvisorPhone: recordFieldValue(record, /Academic_Advisor.*(Phone|Mobile|Contact)/i),
+  }
+}
+
+function parseAdvisorCell(text: string, role: 'faculty' | 'academic'): Partial<StudentInfo> {
+  const compact = text.replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim()
+  const roleLabelText = role === 'faculty' ? 'Faculty Advisor' : 'Academic Advisor'
+  const roleIdx = compact.toLowerCase().indexOf(roleLabelText.toLowerCase())
+  const beforeRole = roleIdx >= 0 ? compact.slice(0, roleIdx) : compact
+  const afterRole = roleIdx >= 0 ? compact.slice(roleIdx + roleLabelText.length) : compact
+
+  const email =
+    afterRole.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/)?.[0] ??
+    compact.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/)?.[0] ??
+    ''
+  const phone =
+    afterRole.replace(email, ' ').match(/(?<!\d)\d{10}(?!\d)/)?.[0] ??
+    compact.match(/(?<!\d)\d{10}(?!\d)/)?.[0] ??
+    ''
+
+  let name = beforeRole
+    .replace(/\bCounselor\b/gi, '')
+    .replace(/[_:|/-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!name) {
+    name = compact
+      .replace(roleLabelText, '')
+      .replace(email, '')
+      .replace(phone, '')
+      .replace(/\bCounselor\b/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+  }
+
+  if (role === 'faculty') {
+    return { advisorName: name, advisorEmail: email, advisorPhone: phone }
+  }
+  return { academicAdvisorName: name, academicAdvisorEmail: email, academicAdvisorPhone: phone }
+}
+
+function parseTimetableProfilePage(html: string): Partial<StudentInfo> {
+  const innerHtml = extractInnerHtml(html)
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(innerHtml, 'text/html')
+  const patch: Partial<StudentInfo> = {}
+
+  const infoTable = Array.from(doc.querySelectorAll('table')).find(t =>
+    t.textContent?.includes('Registration Number:') && t.textContent?.includes('Program:')
+  )
+
+  if (infoTable) {
+    Array.from(infoTable.querySelectorAll('tr')).forEach(row => {
+      const cells = Array.from(row.querySelectorAll('td'))
+        .map(c => c.textContent?.replace(/\s+/g, ' ').trim() ?? '')
+      for (let i = 0; i < cells.length; i++) {
+        const key = normalizeInfoKey(cells[i] ?? '')
+        if (!key) continue
+        const value = getAdjacentValue(cells, i)
+        if (!value) continue
+
+        if (key.includes('registration number')) patch.regNo = value
+        if (key === 'name') patch.name = value
+        if (key.includes('program')) patch.program = value
+        if (key.includes('department')) patch.department = value
+        if (key.includes('mobile')) patch.mobile = value.replace(/\s+/g, '')
+        if (key.includes('semester')) patch.semester = parseInt(value, 10) || patch.semester
+        if (key === 'batch') patch.batch = parseInt(value, 10) || patch.batch
+      }
+    })
+  }
+
+  if (patch.department) {
+    const sectionMatch = patch.department.match(/\(([A-Za-z0-9]+)\s*Section\)/i)
+    if (sectionMatch?.[1]) patch.section = sectionMatch[1].trim()
+    patch.department = patch.department
+      .replace(/\([^()]*section\)/ig, '')
+      .replace(/\s*-\s*$/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+  }
+
+  const pageText = doc.body.textContent?.replace(/\s+/g, ' ') ?? ''
+  const ay = pageText.match(/AY\s*20\d{2}\s*[- ]\s*\d{2}\s*[A-Z]+/i)?.[0]
+  if (ay) patch.academicYear = ay.replace(/\s+/g, ' ').trim()
+
+  const counselorRow = Array.from(doc.querySelectorAll('tr')).find(tr =>
+    /counselor/i.test(tr.querySelector('td')?.textContent ?? '')
+  )
+  if (counselorRow) {
+    const cells = Array.from(counselorRow.querySelectorAll('td'))
+      .map(td => td.textContent?.replace(/\s+/g, ' ').trim() ?? '')
+      .filter(Boolean)
+    if (cells[1]) Object.assign(patch, parseAdvisorCell(cells[1], 'faculty'))
+    if (cells[2]) Object.assign(patch, parseAdvisorCell(cells[2], 'academic'))
+  }
+
+  Array.from(doc.querySelectorAll('td')).forEach(td => {
+    const text = td.textContent?.replace(/\s+/g, ' ').trim() ?? ''
+    if (!text) return
+    if ((!patch.advisorName || !patch.advisorEmail || !patch.advisorPhone) && text.includes('Faculty Advisor')) {
+      Object.assign(patch, parseAdvisorCell(text, 'faculty'))
+    }
+    if ((!patch.academicAdvisorName || !patch.academicAdvisorEmail || !patch.academicAdvisorPhone) && text.includes('Academic Advisor')) {
+      Object.assign(patch, parseAdvisorCell(text, 'academic'))
+    }
+  })
+
+  return patch
+}
+
+function parseTimetableCreditsPage(html: string): Record<string, number> {
+  const innerHtml = extractInnerHtml(html)
+  const credits: Record<string, number> = {}
+  const rowRegex = /<td>\s*\d+\s*<\/td>\s*<td>\s*([A-Za-z0-9]+)\s*<\/td>\s*<td>[\s\S]*?<\/td>\s*<td>\s*([0-9]+(?:\.[0-9]+)?)\s*<\/td>/gi
+  let match: RegExpExecArray | null = rowRegex.exec(innerHtml)
+  while (match) {
+    const code = (match[1] ?? '').trim()
+    const credit = parseFloat(match[2] ?? '')
+    if (code && Number.isFinite(credit)) {
+      credits[code] = credit
+    }
+    match = rowRegex.exec(innerHtml)
+  }
+  return credits
+}
+
+export interface TimetableProfileCredits {
+  profilePatch: Partial<StudentInfo>
+  creditsByCode: Record<string, number>
+}
+
+export async function fetchTimetableProfileAndCredits(): Promise<TimetableProfileCredits> {
+  const token = getSessionToken()
+  if (!token) throw new Error('Not authenticated')
+  const resp = await fetch('/proxy/page/My_Time_Table_2023_24', {
+    headers: { 'Accept': 'text/html,application/xhtml+xml', 'X-Session-Token': token },
+  })
+  if (resp.status === 401) throw new Error('Session expired — please log in again')
+  if (!resp.ok) throw new Error(`Server error: HTTP ${resp.status}`)
+  const html = await resp.text()
+  return {
+    profilePatch: parseTimetableProfilePage(html),
+    creditsByCode: parseTimetableCreditsPage(html),
+  }
+}
+
+export async function fetchTimetableProfilePatch(): Promise<Partial<StudentInfo>> {
+  const data = await fetchTimetableProfileAndCredits()
+  return data.profilePatch
+}
+
+export interface AcademicCalendarEvent {
+  id: string
+  date: string // YYYY-MM-DD
+  title: string
+  type: 'holiday' | 'exam' | 'working' | 'event'
+  dayOrder?: number
+  semester: 'odd' | 'even'
+}
+
+function extractPlannerInnerHtml(outerHtml: string): string {
+  const parser = new DOMParser()
+  const outerDoc = parser.parseFromString(outerHtml, 'text/html')
+  const encoded = outerDoc
+    .querySelector('.zc-pb-embed-placeholder-content')
+    ?.getAttribute('zmlvalue')
+  if (!encoded) return extractInnerHtml(outerHtml)
+  const textarea = document.createElement('textarea')
+  textarea.innerHTML = encoded
+  return textarea.value
+}
+
+function classifyCalendarType(title: string): AcademicCalendarEvent['type'] {
+  const t = title.toLowerCase()
+  if (
+    t.includes('holiday') ||
+    /holi|pongal|pooja|christmas|deepavali|diwali|muharram|milad|thaipoosam|good friday/.test(t)
+  ) return 'holiday'
+  if (t.includes('exam') || t.includes('assessment') || t.includes('test')) return 'exam'
+  if (t.includes('working day') || t.includes('last working')) return 'working'
+  return 'event'
+}
+
+function parsePlannerEvents(html: string, semester: 'odd' | 'even'): AcademicCalendarEvent[] {
+  const plannerHtml = extractPlannerInnerHtml(html)
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(plannerHtml, 'text/html')
+  const table = doc.querySelector('table')
+  if (!table) return []
+
+  const months = semester === 'odd' ? [7, 8, 9, 10, 11, 12] : [1, 2, 3, 4, 5, 6]
+  const year = semester === 'odd' ? 2025 : 2026
+  const events: AcademicCalendarEvent[] = []
+
+  Array.from(table.querySelectorAll('tr')).forEach((row, rowIdx) => {
+    const cells = Array.from(row.querySelectorAll('td,th'))
+      .map(c => c.textContent?.replace(/\s+/g, ' ').trim() ?? '')
+    if (cells.length < 30) return
+
+    for (let block = 0; block < 6; block++) {
+      const offset = block * 5
+      const day = parseInt(cells[offset] ?? '', 10)
+      if (!Number.isFinite(day)) continue
+
+      const month = months[block] ?? 1
+      const check = new Date(Date.UTC(year, month - 1, day))
+      if (check.getUTCMonth() !== month - 1) continue
+
+      const rawTitle = (cells[offset + 2] ?? '').trim()
+      const dayOrderText = (cells[offset + 3] ?? '').trim()
+      const dayOrder = /^\d+$/.test(dayOrderText) ? parseInt(dayOrderText, 10) : undefined
+      const title = rawTitle || (dayOrder ? `Day Order ${dayOrder}` : '')
+      if (!title) continue
+
+      const date = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+      events.push({
+        id: `${semester}-${rowIdx}-${block}-${day}`,
+        date,
+        title,
+        dayOrder,
+        type: rawTitle ? classifyCalendarType(rawTitle) : 'working',
+        semester,
+      })
+    }
+  })
+
+  return events
+}
+
+async function fetchPlannerPage(linkName: string): Promise<string> {
+  const token = getSessionToken()
+  if (!token) throw new Error('Not authenticated')
+  const resp = await fetch(`/proxy/page/${linkName}`, {
+    headers: { 'Accept': 'text/html,application/xhtml+xml', 'X-Session-Token': token },
+  })
+  if (resp.status === 401) throw new Error('Session expired — please log in again')
+  if (!resp.ok) throw new Error(`Server error: HTTP ${resp.status}`)
+  return await resp.text()
+}
+
+export async function fetchAcademicCalendarEvents(): Promise<AcademicCalendarEvent[]> {
+  const [oddResult, evenResult] = await Promise.allSettled([
+    fetchPlannerPage('Academic_Planner_2025_26_ODD'),
+    fetchPlannerPage('Academic_Planner_2025_26_EVEN'),
+  ])
+
+  const events: AcademicCalendarEvent[] = []
+  if (oddResult.status === 'fulfilled') {
+    events.push(...parsePlannerEvents(oddResult.value, 'odd'))
+  }
+  if (evenResult.status === 'fulfilled') {
+    events.push(...parsePlannerEvents(evenResult.value, 'even'))
+  }
+  if (events.length === 0) {
+    const reason = oddResult.status === 'rejected'
+      ? oddResult.reason
+      : evenResult.status === 'rejected'
+        ? evenResult.reason
+        : new Error('No planner events found')
+    throw reason instanceof Error ? reason : new Error('Failed to load academic planner')
+  }
+
+  return events.sort((a, b) => (
+    a.date.localeCompare(b.date) ||
+    a.title.localeCompare(b.title)
+  ))
+}
+
+export type { AttendanceCourse, InternalMark, StudentInfo }
+
+// Get today's classes based on day order — returns empty if no valid day order
+export function getTodayClasses(dayOrder: number | null, liveAttendance?: AttendanceCourse[]): Array<{
+  period: number
+  timeSlot: string
+  slot: string
+  course: AttendanceCourse | null
+}> {
+  if (typeof dayOrder !== 'number' || !Number.isInteger(dayOrder) || dayOrder < 1 || dayOrder > 5) {
+    return []
+  }
+  const slots = BATCH2_TIMETABLE[dayOrder] ?? []
+  const courseList = (liveAttendance && liveAttendance.length > 0) ? liveAttendance : ATTENDANCE
+
+  return slots.map((slotCode, idx) => {
+    const course = courseList.find(c => {
+      // Match theory slots (single letter A-G)
+      if (/^[A-G]$/.test(slotCode)) return c.slot === slotCode && c.type === 'Theory'
+      // Match lab slots (P## pattern)
+      if (/^P\d+/.test(slotCode)) {
+        return c.slot.split('-').some(s => s === slotCode) && c.type === 'Practical'
+      }
+      // Match L slots
+      if (/^L\d+/.test(slotCode)) {
+        return c.slot.split('-').some(s => s === slotCode)
+      }
+      return false
+    }) ?? null
+
+    return {
+      period: idx + 1,
+      timeSlot: SLOT_TIMES[idx] ?? '',
+      slot: slotCode,
+      course,
+    }
+  }).filter(p => p.course !== null || /^[A-G]$/.test(p.slot))
+}
+
+// Get schedule for all 5 day orders
+export function getFullSchedule(liveAttendance?: AttendanceCourse[]): Record<number, ReturnType<typeof getTodayClasses>> {
+  const result: Record<number, ReturnType<typeof getTodayClasses>> = {}
+  for (let d = 1; d <= 5; d++) {
+    result[d] = getTodayClasses(d, liveAttendance).filter(p => p.course !== null)
+  }
+  return result
+}
+
+// ── Circulars ──────────────────────────────────────────────────────────────────
+export interface Circular {
+  id: string
+  title: string
+  date: string
+  from?: string
+}
+
+function parseCircularsPage(html: string): Circular[] {
+  const innerHtml = extractInnerHtml(html)
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(innerHtml, 'text/html')
+  const circulars: Circular[] = []
+
+  for (const table of Array.from(doc.querySelectorAll('table'))) {
+    const rows = Array.from(table.querySelectorAll('tr'))
+    if (rows.length < 2) continue
+
+    const headerTexts = Array.from(rows[0]?.querySelectorAll('th, td') ?? [])
+      .map(h => h.textContent?.trim().toLowerCase() ?? '')
+    if (headerTexts.every(h => h.length === 0)) continue
+    if (headerTexts.some(h => h === 'login' || h === 'home' || h === 'logout')) continue
+
+    let found = 0
+    rows.slice(1).forEach((row, idx) => {
+      const tds = Array.from(row.querySelectorAll('td'))
+      const texts = tds.map(td => td.textContent?.trim().replace(/\s+/g, ' ') ?? '')
+      if (texts.every(t => t.length === 0)) return
+
+      const dateIdx = texts.findIndex(t =>
+        /\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}[/-]\d{1,2}[/-]\d{1,2}|[A-Z][a-z]+ \d{1,2},? \d{4}/.test(t)
+      )
+      const title = (
+        dateIdx >= 0
+          ? texts.find((t, i) => i !== dateIdx && t.length > 5)
+          : texts.find(t => t.length > 5)
+      ) ?? texts[0] ?? ''
+
+      if (title.length > 3) {
+        circulars.push({
+          id: `circ-${idx}`,
+          title,
+          date: dateIdx >= 0 ? (texts[dateIdx] ?? '') : '',
+          from: texts.find((t, i) => i !== dateIdx && t !== title && t.length > 0),
+        })
+        found++
+      }
+    })
+    if (found > 0) break
+  }
+  return circulars
+}
+
+export async function fetchCirculars(): Promise<Circular[]> {
+  const token = getSessionToken()
+  if (!token) throw new Error('Not authenticated')
+  const resp = await fetch('/proxy/page/Circular_RA24', {
+    headers: { 'Accept': 'text/html', 'X-Session-Token': token },
+  })
+  if (resp.status === 401) throw new Error('Session expired — please log in again')
+  if (!resp.ok) throw new Error(`Server error: HTTP ${resp.status}`)
+  return parseCircularsPage(await resp.text())
+}
+
+export async function fetchNotificationCount(): Promise<number> {
+  const token = getSessionToken()
+  if (!token) return 0
+  try {
+    const resp = await fetch('/proxy/notifications/getcount?channel=1', {
+      headers: { 'Accept': 'application/json, */*', 'X-Session-Token': token },
+    })
+    if (!resp.ok) return 0
+    const text = await resp.text()
+    if (!text.trim()) return 0
+    const d = JSON.parse(text)
+    return typeof d === 'number' ? d : (d?.count ?? d?.unread_count ?? 0)
+  } catch { return 0 }
+}
+
+export async function validateSession(): Promise<{ valid: boolean; email?: string }> {
+  const token = getSessionToken()
+  if (!token) return { valid: false }
+  try {
+    const resp = await fetch('/auth/validate', {
+      headers: { 'X-Session-Token': token },
+    })
+    if (resp.status === 401) return { valid: false }
+    if (!resp.ok) return { valid: true } // server error — assume valid, don't force logout
+    return await resp.json() as { valid: boolean; email?: string }
+  } catch {
+    return { valid: true } // network error (offline) — keep session
+  }
+}
+
+export { BATCH2_TIMETABLE, SLOT_TIMES }
