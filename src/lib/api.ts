@@ -874,6 +874,24 @@ export async function fetchNotificationCount(): Promise<number> {
   }
 }
 
+export interface PushDesignStatus {
+  enabled: boolean
+  phase: 'design-only' | 'subscription-ready'
+  requirements: string[]
+  notes: string[]
+}
+
+export async function fetchPushDesignStatus(): Promise<PushDesignStatus> {
+  const token = getSessionToken()
+  if (!token) throw new Error('Not authenticated')
+  const resp = await fetch('/auth/push/status', {
+    headers: { 'Accept': 'application/json', 'X-Session-Token': token },
+  })
+  await throwIfUnauthorized(resp)
+  if (!resp.ok) throw new Error(`Server error: HTTP ${resp.status}`)
+  return await resp.json() as PushDesignStatus
+}
+
 export async function validateSession(): Promise<{ valid: boolean; email?: string; reason?: string }> {
   const token = getSessionToken()
   if (!token) return { valid: false }

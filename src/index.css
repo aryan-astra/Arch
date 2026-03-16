@@ -3106,6 +3106,148 @@ img { max-width: 100%; }
 .theme-swatch-mocha-mousse    { background: linear-gradient(135deg,#FFF3E4,#D7A173); box-shadow: none; }
 .theme-swatch-darkmatter      { background: linear-gradient(135deg,#111215,#FF8A3D); box-shadow: none; }
 
+.theme-gallery-grid {
+  margin: 0 16px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.theme-gallery-card {
+  border: 0.8px solid var(--ink-8);
+  border-radius: 12px;
+  background: var(--white);
+  padding: 9px 10px;
+  box-shadow: 0 1px 0 0 var(--ink-8), 0 0 0 0.5px var(--ink-8);
+}
+.theme-gallery-card.active {
+  border-color: color-mix(in srgb, var(--theme-accent) 30%, var(--ink-8));
+  background: color-mix(in srgb, var(--theme-accent) 7%, var(--white));
+}
+.theme-gallery-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink-2);
+  margin-bottom: 8px;
+}
+.theme-gallery-active {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: color-mix(in srgb, var(--theme-accent) 82%, var(--ink-2));
+}
+.theme-gallery-swatches {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+.theme-gallery-swatch {
+  height: 20px;
+  border-radius: 8px;
+  border: 0.5px solid rgba(0, 0, 0, 0.1);
+}
+
+.logo-gallery-grid {
+  margin: 0 16px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.logo-gallery-card {
+  border: 0.8px solid var(--ink-8);
+  border-radius: 12px;
+  background: var(--white);
+  padding: 8px;
+  box-shadow: 0 1px 0 0 var(--ink-8), 0 0 0 0.5px var(--ink-8);
+}
+.logo-gallery-image-wrap {
+  width: 100%;
+  min-height: 74px;
+  border-radius: 10px;
+  background:
+    linear-gradient(45deg, rgba(255,255,255,0.06) 25%, transparent 25%) 0 0/14px 14px,
+    linear-gradient(-45deg, rgba(255,255,255,0.06) 25%, transparent 25%) 0 0/14px 14px,
+    #0E0F14;
+  border: 0.5px solid rgba(255,255,255,0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+}
+.logo-gallery-image {
+  max-width: 100%;
+  max-height: 58px;
+  object-fit: contain;
+}
+.logo-gallery-label {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--ink-3);
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.push-design-card {
+  margin: 0 16px;
+  padding: 10px;
+  border-radius: 12px;
+  border: 0.8px solid var(--ink-8);
+  background: var(--white);
+  box-shadow: 0 1px 0 0 var(--ink-8), 0 0 0 0.5px var(--ink-8);
+}
+.push-design-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.push-design-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--ink-9);
+  color: var(--ink-2);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.push-design-badge.ready {
+  background: color-mix(in srgb, #34C759 22%, var(--ink-9));
+  color: #1A6B38;
+}
+.push-design-meta {
+  font-size: 11px;
+  color: var(--ink-4);
+  font-weight: 600;
+}
+.push-design-copy {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--ink-3);
+  line-height: 1.35;
+}
+.push-design-list {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.push-design-item {
+  font-size: 11px;
+  color: var(--ink-2);
+  background: var(--ink-10);
+  border: 0.5px solid var(--ink-8);
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+
 /* ── Attendance donut ring ──────────────────────────── */
 .att-ring-row {
   display: flex;
