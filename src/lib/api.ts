@@ -119,6 +119,7 @@ function parseAttendancePage(html: string): LiveAttendanceResult {
       const title = cells[1]?.textContent?.trim() ?? ''
       // Category column (Theory/Practical)
       const courseType = cells[2]?.textContent?.trim() ?? 'Theory'
+      const normalizedCourseType = courseType.toLowerCase()
       const faculty = cells[3]?.textContent?.trim() ?? ''
       const slot = cells[4]?.textContent?.trim() ?? ''
       const room = cells[5]?.textContent?.trim() ?? ''
@@ -129,7 +130,7 @@ function parseAttendancePage(html: string): LiveAttendanceResult {
         attendance.push({
           code,
           title,
-          type: courseType === 'Practical' ? 'Practical' : 'Theory',
+          type: (normalizedCourseType.includes('practical') || normalizedCourseType.includes('lab')) ? 'Practical' : 'Theory',
           faculty,
           slot,
           room,
@@ -762,17 +763,32 @@ export function getTodayClasses(
   const slots = timetableByDay[dayOrder] ?? []
   const courseList = (liveAttendance && liveAttendance.length > 0) ? liveAttendance : ATTENDANCE
 
+  const toCourseSlotTokens = (slotValue: string): string[] => (
+    slotValue
+      .replace(/[\u2013\u2014]/g, '-')
+      .split(/[^A-Za-z0-9]+/g)
+      .map((token) => token.trim().toUpperCase())
+      .filter(Boolean)
+  )
+
   return slots.map((slotCode, idx) => {
+    const normalizedSlotCode = slotCode.trim().toUpperCase()
     const course = courseList.find(c => {
+      const slotTokens = toCourseSlotTokens(c.slot)
+      const hasSlotToken = slotTokens.includes(normalizedSlotCode)
+      const isPracticalCourse =
+        c.type === 'Practical' ||
+        slotTokens.some((token) => /^P\d+$/.test(token) || /^L\d+$/.test(token))
+
       // Match theory slots (single letter A-G)
-      if (/^[A-G]$/.test(slotCode)) return c.slot === slotCode && c.type === 'Theory'
+      if (/^[A-G]$/.test(normalizedSlotCode)) return hasSlotToken && !isPracticalCourse
       // Match lab slots (P## pattern)
-      if (/^P\d+/.test(slotCode)) {
-        return c.slot.split('-').some(s => s === slotCode) && c.type === 'Practical'
+      if (/^P\d+$/.test(normalizedSlotCode)) {
+        return hasSlotToken && isPracticalCourse
       }
       // Match L slots
-      if (/^L\d+/.test(slotCode)) {
-        return c.slot.split('-').some(s => s === slotCode)
+      if (/^L\d+$/.test(normalizedSlotCode)) {
+        return hasSlotToken
       }
       return false
     }) ?? null
@@ -780,7 +796,7 @@ export function getTodayClasses(
     return {
       period: idx + 1,
       timeSlot: SLOT_TIMES[idx] ?? '',
-      slot: slotCode,
+      slot: normalizedSlotCode,
       course,
     }
   }).filter(p => p.course !== null || /^[A-G]$/.test(p.slot))
