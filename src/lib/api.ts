@@ -861,12 +861,17 @@ export async function fetchNotificationCount(): Promise<number> {
     const resp = await fetch('/proxy/notifications/getcount?channel=1', {
       headers: { 'Accept': 'application/json, */*', 'X-Session-Token': token },
     })
+    await throwIfUnauthorized(resp)
     if (!resp.ok) return 0
     const text = await resp.text()
     if (!text.trim()) return 0
     const d = JSON.parse(text)
     return typeof d === 'number' ? d : (d?.count ?? d?.unread_count ?? 0)
-  } catch { return 0 }
+  } catch (err) {
+    const msg = (err as Error).message ?? ''
+    if (msg.includes('Session expired') || msg.includes('Not authenticated')) throw err
+    return 0
+  }
 }
 
 export async function validateSession(): Promise<{ valid: boolean; email?: string; reason?: string }> {

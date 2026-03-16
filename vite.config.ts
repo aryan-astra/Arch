@@ -46,6 +46,21 @@ export default defineConfig(({ mode }) => {
       },
     },
   },
+  build: {
+    target: 'es2020',
+    cssCodeSplit: true,
+    chunkSizeWarningLimit: 650,
+    rollupOptions: {
+      output: {
+        manualChunks: (id) => {
+          if (!id.includes('node_modules')) return undefined
+          if (id.includes('framer-motion')) return 'motion-vendor'
+          if (id.includes('recharts') || id.includes('\\d3-') || id.includes('/d3-')) return 'charts-vendor'
+          return undefined
+        },
+      },
+    },
+  },
   plugins: [
     react(),
     VitePWA({
