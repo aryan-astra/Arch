@@ -339,7 +339,7 @@ type TabCachePayload = {
 
 const ATTENDANCE_SNAPSHOT_PREFIX = 'arch.attendance.snapshot.'
 const TAB_CACHE_PREFIX = 'arch.tabcache.v1.'
-const TAB_CACHE_VERSION = 2
+const TAB_CACHE_VERSION = 3
 const TAB_CACHE_MAX_AGE_MS = 21 * 24 * 60 * 60 * 1000
 const DAY_ORDER_REFRESH_MS = 10 * 60 * 1000
 const ATTENDANCE_POLL_INTERVALS: Record<AttendancePollingMode, number> = {
@@ -419,7 +419,23 @@ function cloneDefaultTimetableByDay(): TimetableByDay {
   }
 }
 
-function normalizeTimetableByDay(raw: unknown, fallback: TimetableByDay = cloneDefaultTimetableByDay()): TimetableByDay {
+function fallbackTimetableForBatch(batch: number | null | undefined): TimetableByDay {
+  return batch === 2 ? cloneDefaultTimetableByDay() : {}
+}
+
+function isBatch2FallbackTimetable(timetableByDay: TimetableByDay): boolean {
+  for (let day = 1; day <= 5; day += 1) {
+    const expected = BATCH2_TIMETABLE[day] ?? []
+    const actual = timetableByDay[day] ?? []
+    if (actual.length !== expected.length) return false
+    for (let idx = 0; idx < expected.length; idx += 1) {
+      if (actual[idx] !== expected[idx]) return false
+    }
+  }
+  return true
+}
+
+function normalizeTimetableByDay(raw: unknown, fallback: TimetableByDay = {}): TimetableByDay {
   if (!raw || typeof raw !== 'object') return fallback
   const parsed: TimetableByDay = {}
   for (let day = 1; day <= 5; day += 1) {
@@ -447,7 +463,7 @@ function readTabCache(email: string): TabCachePayload | null {
       return null
     }
     const studentBatch = typeof parsed.studentBatch === 'number' && parsed.studentBatch >= 1 ? parsed.studentBatch : null
-    const fallbackTimetable = studentBatch === 1 ? {} : cloneDefaultTimetableByDay()
+    const fallbackTimetable = fallbackTimetableForBatch(studentBatch)
     return {
       attendance: Array.isArray(parsed.attendance) ? parsed.attendance as AttendanceCourse[] : [],
       marks: Array.isArray(parsed.marks) ? parsed.marks as InternalMark[] : [],
@@ -2496,17 +2512,7 @@ export default function App() {
   const bootSnapshot = useMemo(() => loadSessionSnapshot(), [])
   const bootEmail = bootSnapshot?.email ?? ''
   const bootCache = useMemo(() => (bootEmail ? readTabCache(bootEmail) : null), [bootEmail])
-  const bootStudentBatch = useMemo(() => {
-    if (!bootEmail) return null
-    const saved = localStorage.getItem(`academia.student.${bootEmail}`)
-    if (!saved) return null
-    try {
-      const parsed = JSON.parse(saved) as Partial<StudentInfo>
-      return typeof parsed.batch === 'number' && parsed.batch >= 1 ? parsed.batch : null
-    } catch {
-      return null
-    }
-  }, [bootEmail])
+  const bootStudentBatch = bootCache?.studentBatch ?? null
   const bootLastUpdated = useMemo(() => {
     if (!bootCache?.lastUpdatedIso) return null
     const date = new Date(bootCache.lastUpdatedIso)
@@ -2540,7 +2546,7 @@ export default function App() {
   const [needUpdate, setNeedUpdate] = useState(false)
   const [timetableByDay, setTimetableByDay] = useState<TimetableByDay>(() => {
     if (bootCache?.timetableByDay) return bootCache.timetableByDay
-    return bootStudentBatch === 1 ? {} : cloneDefaultTimetableByDay()
+    return fallbackTimetableForBatch(bootStudentBatch)
   })
   const [notificationCount, setNotificationCount] = useState(0)
   const [adminMetrics, setAdminMetrics] = useState<AdminSelfMetrics | null>(null)
@@ -2820,8 +2826,8 @@ export default function App() {
       setCourseCredits(ttResult.value.creditsByCode)
       const detectedBatch = typeof ttResult.value.profilePatch.batch === 'number'
         ? ttResult.value.profilePatch.batch
-        : studentRef.current.batch
-      const fallbackTimetable = detectedBatch === 1 ? {} : cloneDefaultTimetableByDay()
+        : null
+      const fallbackTimetable = fallbackTimetableForBatch(detectedBatch)
       setTimetableByDay(normalizeTimetableByDay(ttResult.value.timetableByDay, fallbackTimetable))
       setAttendance(prev => applyCreditsToAttendance(prev, ttResult.value.creditsByCode))
     }
@@ -2868,7 +2874,7 @@ export default function App() {
     setCourseCredits({})
     setCalendarEvents([])
     setCalendarError('')
-    setTimetableByDay(cloneDefaultTimetableByDay())
+    setTimetableByDay({})
     setNotificationCount(0)
     setAdminMetrics(null)
     setAdminMetricsLoading(false)
@@ -3003,11 +3009,20 @@ export default function App() {
       setDayOrder(nextDayOrder)
     }
 
-    const nextStudent = mergeStudent(res.student, studentRef.current)
+    const nextStudent = mergeStudent(studentRef.current, res.student)
     const nextAttendance = applyCreditsToAttendance(res.attendance, creditsRef.current)
     setAttendance(nextAttendance)
     setMarks(res.marks)
     setStudent(nextStudent)
+    setTimetableByDay((prev) => {
+      if (nextStudent.batch === 1 && isBatch2FallbackTimetable(prev)) {
+        return {}
+      }
+      if (nextStudent.batch === 2 && Object.keys(prev).length === 0) {
+        return cloneDefaultTimetableByDay()
+      }
+      return prev
+    })
     refreshSessionSnapshot()
 
     const nextSnapshot = createAttendanceSnapshot(nextAttendance)
@@ -3142,7 +3157,7 @@ export default function App() {
       setAttendance(cache?.attendance ?? [])
       setMarks(cache?.marks ?? [])
       setCalendarEvents(cache?.calendarEvents ?? [])
-      const fallbackTimetable = cachedStudent.batch === 1 ? {} : cloneDefaultTimetableByDay()
+      const fallbackTimetable = fallbackTimetableForBatch(cache?.studentBatch ?? null)
       setTimetableByDay(cache?.timetableByDay ?? fallbackTimetable)
       if (cache?.lastUpdatedIso) {
         const restored = new Date(cache.lastUpdatedIso)
