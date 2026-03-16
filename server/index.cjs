@@ -31,6 +31,7 @@ const LOGIN_TIMEOUT_RETRIES = 1
 const RETRY_BACKOFF_MS = 700
 const SESSION_KEY_PREFIX = 'arch:session:'
 const SESSION_REDIS_WRITE_INTERVAL_MS = 10 * 60 * 1000
+const PUSH_SUB_KEY_PREFIX = 'arch:push:subscription:'
 const REDIS_URL = process.env.REDIS_URL || process.env.RENDER_REDIS_URL || ''
 const SRM_TLS_INSECURE = process.env.SRM_TLS_INSECURE === '1'
 const WEB_PUSH_PUBLIC_KEY = String(process.env.WEB_PUSH_PUBLIC_KEY || '').trim()
@@ -44,6 +45,7 @@ const SRM_HTTPS_AGENT = SRM_TLS_INSECURE
   : undefined
 let redisClient = null
 const authEvents = []
+const pushSubscriptions = new Map()
 
 const UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
 
@@ -94,6 +96,87 @@ function csrfFromJar(jar) {
 
 function sessionKey(token) {
   return `${SESSION_KEY_PREFIX}${token}`
+}
+
+function pushSubscriptionKey(email) {
+  return `${PUSH_SUB_KEY_PREFIX}${encodeURIComponent(normalizeIdentity(email))}`
+}
+
+function sanitizePushSubscription(input) {
+  if (!input || typeof input !== 'object') return null
+  const payload = input
+  const endpoint = typeof payload.endpoint === 'string' ? payload.endpoint.trim() : ''
+  const keys = payload.keys
+  const p256dh = keys && typeof keys.p256dh === 'string' ? keys.p256dh.trim() : ''
+  const auth = keys && typeof keys.auth === 'string' ? keys.auth.trim() : ''
+  if (!endpoint || !p256dh || !auth) return null
+  const expirationTime = payload.expirationTime
+  return {
+    endpoint,
+    keys: { p256dh, auth },
+    expirationTime: typeof expirationTime === 'number' ? expirationTime : null,
+  }
+}
+
+async function savePushSubscription(email, subscription) {
+  const normalizedEmail = normalizeIdentity(email)
+  if (!normalizedEmail) throw new Error('Invalid email for push subscription')
+  const record = {
+    email: normalizedEmail,
+    subscription,
+    updatedAt: Date.now(),
+  }
+  if (redisClient) {
+    await redisClient.set(pushSubscriptionKey(normalizedEmail), JSON.stringify(record))
+    return
+  }
+  pushSubscriptions.set(normalizedEmail, record)
+}
+
+async function readPushSubscription(email) {
+  const normalizedEmail = normalizeIdentity(email)
+  if (!normalizedEmail) return null
+  if (redisClient) {
+    const raw = await redisClient.get(pushSubscriptionKey(normalizedEmail))
+    if (!raw) return null
+    try {
+      const parsed = JSON.parse(raw)
+      return parsed && typeof parsed === 'object' ? parsed : null
+    } catch {
+      await redisClient.del(pushSubscriptionKey(normalizedEmail))
+      return null
+    }
+  }
+  return pushSubscriptions.get(normalizedEmail) || null
+}
+
+async function deletePushSubscription(email) {
+  const normalizedEmail = normalizeIdentity(email)
+  if (!normalizedEmail) return
+  if (redisClient) {
+    await redisClient.del(pushSubscriptionKey(normalizedEmail))
+    return
+  }
+  pushSubscriptions.delete(normalizedEmail)
+}
+
+async function pushSubscriptionCount() {
+  if (redisClient) {
+    let cursor = '0'
+    let count = 0
+    do {
+      const result = await redisClient.scan(cursor, {
+        MATCH: `${PUSH_SUB_KEY_PREFIX}*`,
+        COUNT: 250,
+      })
+      const nextCursor = Array.isArray(result) ? result[0] : result.cursor
+      const keys = Array.isArray(result) ? (result[1] || []) : result.keys
+      count += Array.isArray(keys) ? keys.length : 0
+      cursor = nextCursor
+    } while (cursor !== '0')
+    return count
+  }
+  return pushSubscriptions.size
 }
 
 async function initRedisStore() {
@@ -344,25 +427,37 @@ function summarizeActiveUsers(activeSessions) {
     }))
 }
 
-function pushDesignStatusPayload() {
+async function pushDesignStatusPayload(email) {
   const hasPublicKey = WEB_PUSH_PUBLIC_KEY.length > 0
   const hasPrivateKey = WEB_PUSH_PRIVATE_KEY.length > 0
   const hasSubject = WEB_PUSH_SUBJECT.length > 0
   const enabled = hasPublicKey && hasPrivateKey && hasSubject
+  const existing = email ? await readPushSubscription(email) : null
+  const subscriptionStored = Boolean(existing?.subscription?.endpoint)
+  const phase = !enabled
+    ? 'design-only'
+    : subscriptionStored
+      ? 'subscription-stored'
+      : 'subscription-ready'
 
   return {
     enabled,
-    phase: enabled ? 'subscription-ready' : 'design-only',
+    phase,
+    publicKeyAvailable: hasPublicKey,
+    publicKey: hasPublicKey ? WEB_PUSH_PUBLIC_KEY : '',
+    subscriptionStored,
     requirements: [
       hasPublicKey ? 'WEB_PUSH_PUBLIC_KEY configured' : 'Configure WEB_PUSH_PUBLIC_KEY',
       hasPrivateKey ? 'WEB_PUSH_PRIVATE_KEY configured' : 'Configure WEB_PUSH_PRIVATE_KEY',
       hasSubject ? 'WEB_PUSH_SUBJECT configured' : 'Configure WEB_PUSH_SUBJECT',
-      'Store PushSubscription endpoint per authenticated user',
+      subscriptionStored ? 'Push subscription saved for this account' : 'Register and save PushSubscription endpoint',
       'Run attendance-diff sender worker to dispatch notifications',
     ],
     notes: enabled
       ? [
-        'Push keys are configured. Next step is subscription persistence and sender worker trigger.',
+        subscriptionStored
+          ? 'This account has a saved subscription. Next step is sender worker trigger integration.'
+          : 'Push keys are configured. Next step is saving a subscription and sender trigger integration.',
       ]
       : [
         'Closed-app web push design is ready; backend keys and sender worker are pending.',
@@ -694,7 +789,67 @@ app.get('/auth/push/status', async (req, res) => {
     return res.status(401).json({ error: 'Not authenticated', reason: 'session_missing' })
   }
   await touchSession(token, session)
-  res.json(pushDesignStatusPayload())
+  res.json(await pushDesignStatusPayload(session.email))
+})
+
+// GET /auth/push/public-key — expose VAPID public key for PushManager.subscribe
+app.get('/auth/push/public-key', async (req, res) => {
+  const token = req.headers['x-session-token']
+  const session = await getActiveSession(token)
+  if (!session) {
+    recordAuthEvent('session_invalid', {
+      reason: 'session_missing',
+      route: '/auth/push/public-key',
+      ip: clientIp(req),
+    })
+    return res.status(401).json({ error: 'Not authenticated', reason: 'session_missing' })
+  }
+  await touchSession(token, session)
+  if (!WEB_PUSH_PUBLIC_KEY) {
+    return res.status(503).json({ error: 'WEB_PUSH_PUBLIC_KEY not configured', reason: 'push_not_configured' })
+  }
+  res.json({ publicKey: WEB_PUSH_PUBLIC_KEY })
+})
+
+// POST /auth/push/subscription — save browser PushSubscription for current user
+app.post('/auth/push/subscription', async (req, res) => {
+  const token = req.headers['x-session-token']
+  const session = await getActiveSession(token)
+  if (!session) {
+    recordAuthEvent('session_invalid', {
+      reason: 'session_missing',
+      route: '/auth/push/subscription',
+      ip: clientIp(req),
+    })
+    return res.status(401).json({ error: 'Not authenticated', reason: 'session_missing' })
+  }
+  await touchSession(token, session)
+  const candidate = req.body?.subscription && typeof req.body.subscription === 'object'
+    ? req.body.subscription
+    : req.body
+  const normalizedSubscription = sanitizePushSubscription(candidate)
+  if (!normalizedSubscription) {
+    return res.status(400).json({ error: 'Invalid push subscription payload', reason: 'invalid_push_subscription' })
+  }
+  await savePushSubscription(session.email, normalizedSubscription)
+  res.json({ ok: true, subscriptionStored: true })
+})
+
+// DELETE /auth/push/subscription — remove saved PushSubscription for current user
+app.delete('/auth/push/subscription', async (req, res) => {
+  const token = req.headers['x-session-token']
+  const session = await getActiveSession(token)
+  if (!session) {
+    recordAuthEvent('session_invalid', {
+      reason: 'session_missing',
+      route: '/auth/push/subscription',
+      ip: clientIp(req),
+    })
+    return res.status(401).json({ error: 'Not authenticated', reason: 'session_missing' })
+  }
+  await touchSession(token, session)
+  await deletePushSubscription(session.email)
+  res.json({ ok: true, subscriptionStored: false })
 })
 
 // GET /proxy/* — proxy authenticated requests
@@ -773,11 +928,13 @@ app.get('/auth/admin/metrics', async (req, res) => {
   try {
     const activeSessions = await listActiveSessions()
     const activeUsers = summarizeActiveUsers(activeSessions)
+    const storedPushSubscriptions = await pushSubscriptionCount()
     res.json({
       ok: true,
       store: redisClient ? 'redis' : 'memory',
       activeSessionCount: activeSessions.length,
       activeUserCount: activeUsers.length,
+      pushSubscriptionCount: storedPushSubscriptions,
       activeUsers,
       recentAuthEvents: [...authEvents].slice(-80).reverse(),
       serverTime: new Date().toISOString(),
@@ -792,10 +949,12 @@ app.get('/auth/health', async (req, res) => {
   try {
     const activeSessions = await sessionCount()
     const activeUsers = summarizeActiveUsers(await listActiveSessions())
+    const storedPushSubscriptions = await pushSubscriptionCount()
     res.json({
       ok: true,
       sessions: activeSessions,
       users: activeUsers.length,
+      pushSubscriptions: storedPushSubscriptions,
       store: redisClient ? 'redis' : 'memory',
     })
   } catch (err) {

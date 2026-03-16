@@ -3222,6 +3222,10 @@ img { max-width: 100%; }
   background: color-mix(in srgb, #34C759 22%, var(--ink-9));
   color: #1A6B38;
 }
+.push-design-badge.active {
+  background: color-mix(in srgb, #3B82F6 24%, var(--ink-9));
+  color: #154A9A;
+}
 .push-design-meta {
   font-size: 11px;
   color: var(--ink-4);
@@ -3246,6 +3250,16 @@ img { max-width: 100%; }
   border: 0.5px solid var(--ink-8);
   border-radius: 8px;
   padding: 6px 8px;
+}
+.push-design-actions {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.push-design-note {
+  margin-top: 8px;
+  margin-left: 0;
 }
 
 /* ── Attendance donut ring ──────────────────────────── */

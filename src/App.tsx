@@ -5,7 +5,7 @@ import {
   classesSafeToMiss, classesNeededToReach,
 } from "./data/real-data"
 import type { AttendanceCourse, InternalMark, StudentInfo } from "./data/real-data"
-import { BATCH2_TIMETABLE, getTodayClasses, fetchAttendance, fetchCurrentDayOrder, fetchProfilePatch, fetchTimetableProfileAndCredits, fetchAcademicCalendarEvents, fetchNotificationCount, fetchPushDesignStatus, validateSession, loginUser, logoutUser, getSessionToken } from "./lib/api"
+import { BATCH2_TIMETABLE, getTodayClasses, fetchAttendance, fetchCurrentDayOrder, fetchProfilePatch, fetchTimetableProfileAndCredits, fetchAcademicCalendarEvents, fetchNotificationCount, fetchPushDesignStatus, fetchPushPublicKey, savePushSubscription, deletePushSubscription, validateSession, loginUser, logoutUser, getSessionToken } from "./lib/api"
 import type { AcademicCalendarEvent, PushDesignStatus } from "./lib/api"
 import * as sessionStorageLib from "./lib/storage"
 import { ExpandableNav } from "./components/expandable-tabs"
@@ -120,6 +120,22 @@ function fmt12(time24: string): string {
   const ampm = h >= 12 ? "PM" : "AM"
   const h12 = h % 12 === 0 ? 12 : h % 12
   return `${h12}:${m} ${ampm}`
+}
+
+function supportsWebPush(): boolean {
+  return 'Notification' in window && 'serviceWorker' in navigator && 'PushManager' in window
+}
+
+function vapidBase64ToArrayBuffer(base64String: string): ArrayBuffer {
+  const normalized = base64String.replace(/-/g, '+').replace(/_/g, '/')
+  const padding = '='.repeat((4 - (normalized.length % 4)) % 4)
+  const rawData = atob(`${normalized}${padding}`)
+  const buffer = new ArrayBuffer(rawData.length)
+  const outputArray = new Uint8Array(buffer)
+  for (let i = 0; i < rawData.length; i += 1) {
+    outputArray[i] = rawData.charCodeAt(i)
+  }
+  return buffer
 }
 
 function fmtTimeSlot(slot: string): { start: string; end: string } {
@@ -2148,8 +2164,12 @@ function ProfileScreen({
   onLogout,
   attendanceAlertPermission,
   onEnableAttendanceAlerts,
+  onEnableClosedPush,
+  onDisableClosedPush,
   pushDesignStatus,
   pushDesignError,
+  pushSubscriptionBusy,
+  pushSubscriptionError,
 }: {
   student: StudentInfo
   theme: Theme
@@ -2157,12 +2177,20 @@ function ProfileScreen({
   onLogout: () => void
   attendanceAlertPermission: NotificationPermission | 'unsupported'
   onEnableAttendanceAlerts: () => void
+  onEnableClosedPush: () => void
+  onDisableClosedPush: () => void
   pushDesignStatus: PushDesignStatus | null
   pushDesignError: string
+  pushSubscriptionBusy: boolean
+  pushSubscriptionError: string
 }) {
+  const isWebPushSupported = supportsWebPush()
+  const hasStoredPushSubscription = pushDesignStatus?.subscriptionStored === true
   const pushPhaseLabel =
-    pushDesignStatus?.phase === 'subscription-ready'
-      ? 'Config ready'
+    pushDesignStatus?.phase === 'subscription-stored'
+      ? 'Subscribed'
+      : pushDesignStatus?.phase === 'subscription-ready'
+        ? 'Config ready'
       : pushDesignStatus?.phase === 'design-only'
         ? 'Design complete'
         : 'Loading'
@@ -2318,16 +2346,24 @@ function ProfileScreen({
       </div>
 
       <div className="section-header">
-        <span className="section-title">Closed-app Push Design</span>
+        <span className="section-title">Closed-app Push</span>
       </div>
       <div className="push-design-card">
         <div className="push-design-top">
-          <span className={`push-design-badge${pushDesignStatus?.enabled ? ' ready' : ''}`}>{pushPhaseLabel}</span>
-          <span className="push-design-meta">{pushDesignStatus?.enabled ? 'VAPID configured' : 'Awaiting VAPID setup'}</span>
+          <span className={`push-design-badge${pushDesignStatus?.enabled ? ' ready' : ''}${hasStoredPushSubscription ? ' active' : ''}`}>{pushPhaseLabel}</span>
+          <span className="push-design-meta">
+            {isWebPushSupported
+              ? pushDesignStatus?.enabled
+                ? 'Ready for device subscription'
+                : 'Awaiting server VAPID setup'
+              : 'Push unsupported on this browser'}
+          </span>
         </div>
         <div className="push-design-copy">
-          {pushDesignError
-            ? `Unable to fetch push design status: ${pushDesignError}`
+          {pushSubscriptionError
+            ? pushSubscriptionError
+            : pushDesignError
+              ? `Unable to fetch push design status: ${pushDesignError}`
             : pushDesignStatus?.notes?.[0] ?? 'Closed-app notifications need VAPID keys, subscription storage, and a sender worker trigger.'}
         </div>
         <div className="push-design-list">
@@ -2338,6 +2374,36 @@ function ProfileScreen({
           ]).slice(0, 3).map((step) => (
             <div key={step} className="push-design-item">{step}</div>
           ))}
+        </div>
+        <div className="push-design-actions">
+          <button
+            className={`btn-list-item secondary${hasStoredPushSubscription ? ' active' : ''}`}
+            onClick={onEnableClosedPush}
+            disabled={
+              pushSubscriptionBusy ||
+              hasStoredPushSubscription ||
+              !isWebPushSupported ||
+              !pushDesignStatus?.publicKeyAvailable
+            }
+          >
+            <Icons.Bell />
+            {pushSubscriptionBusy
+              ? 'Updating push settings...'
+              : hasStoredPushSubscription
+                ? 'Closed-app push subscribed'
+                : 'Enable closed-app push beta'}
+          </button>
+          <button
+            className="btn-list-item secondary"
+            onClick={onDisableClosedPush}
+            disabled={pushSubscriptionBusy || !hasStoredPushSubscription}
+          >
+            <Icons.Bell />
+            Disable closed-app push beta
+          </button>
+        </div>
+        <div className="profile-alert-note push-design-note">
+          Subscriptions are saved per account. Delivery still depends on sender-worker rollout.
         </div>
       </div>
 
@@ -2433,6 +2499,8 @@ export default function App() {
   const [notificationCount, setNotificationCount] = useState(0)
   const [pushDesignStatus, setPushDesignStatus] = useState<PushDesignStatus | null>(null)
   const [pushDesignError, setPushDesignError] = useState('')
+  const [pushSubscriptionBusy, setPushSubscriptionBusy] = useState(false)
+  const [pushSubscriptionError, setPushSubscriptionError] = useState('')
   const [attendanceAlertPermission, setAttendanceAlertPermission] = useState<NotificationPermission | 'unsupported'>(() => {
     if (!('Notification' in window)) return 'unsupported'
     return Notification.permission
@@ -2712,6 +2780,8 @@ export default function App() {
     setNotificationCount(0)
     setPushDesignStatus(null)
     setPushDesignError('')
+    setPushSubscriptionBusy(false)
+    setPushSubscriptionError('')
     setLastUpdated(null)
     setLoggedEmail('')
     setLoggedIn(false)
@@ -2776,9 +2846,31 @@ export default function App() {
     }
   }, [loggedIn, resetUserSessionState])
 
+  const handleSessionExpiry = useCallback((msg: string): boolean => {
+    if (!msg.includes('Session expired') && !msg.includes('Not authenticated')) return false
+    logoutUser().catch(() => {})
+    resetUserSessionState()
+    return true
+  }, [resetUserSessionState])
+
+  const refreshPushStatus = useCallback(async (): Promise<PushDesignStatus | null> => {
+    try {
+      const status = await fetchPushDesignStatus()
+      setPushDesignStatus(status)
+      setPushDesignError('')
+      return status
+    } catch (err) {
+      const msg = (err as Error).message ?? ''
+      if (handleSessionExpiry(msg)) return null
+      setPushDesignError(msg || 'Failed to load push design status')
+      return null
+    }
+  }, [handleSessionExpiry])
+
   useEffect(() => {
     if (!loggedIn || screen !== 'profile') return
     let disposed = false
+    setPushSubscriptionError('')
     setPushDesignError('')
     fetchPushDesignStatus()
       .then((status) => {
@@ -2786,17 +2878,79 @@ export default function App() {
         setPushDesignStatus(status)
       })
       .catch((err) => {
+        if (disposed) return
         const msg = (err as Error).message ?? ''
-        if (msg.includes('Session expired') || msg.includes('Not authenticated')) {
-          logoutUser().catch(() => {})
-          resetUserSessionState()
+        if (handleSessionExpiry(msg)) {
           disposed = true
           return
         }
-        if (!disposed) setPushDesignError(msg || 'Failed to load push design status')
+        setPushDesignError(msg || 'Failed to load push design status')
       })
     return () => { disposed = true }
-  }, [loggedIn, screen, resetUserSessionState])
+  }, [loggedIn, screen, handleSessionExpiry])
+
+  const enableClosedAppPush = useCallback(async () => {
+    setPushSubscriptionBusy(true)
+    setPushSubscriptionError('')
+    try {
+      if (!supportsWebPush()) {
+        throw new Error('Web Push is not supported on this browser/device.')
+      }
+      if (Notification.permission === 'default') {
+        const permission = await Notification.requestPermission()
+        setAttendanceAlertPermission(permission)
+      }
+      if (Notification.permission !== 'granted') {
+        throw new Error('Notification permission is denied. Allow notifications in browser settings.')
+      }
+      const existingRegistration = await navigator.serviceWorker.getRegistration()
+      if (!existingRegistration) {
+        await navigator.serviceWorker.register('/sw.js')
+      }
+      const registration = await navigator.serviceWorker.ready
+      const publicKey = await fetchPushPublicKey()
+      const appServerKey = vapidBase64ToArrayBuffer(publicKey)
+      let subscription = await registration.pushManager.getSubscription()
+      if (!subscription) {
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: appServerKey,
+        })
+      }
+      await savePushSubscription(subscription.toJSON())
+      await refreshPushStatus()
+    } catch (err) {
+      const msg = (err as Error).message ?? ''
+      if (!handleSessionExpiry(msg)) {
+        setPushSubscriptionError(msg || 'Failed to enable closed-app push')
+      }
+    } finally {
+      setPushSubscriptionBusy(false)
+    }
+  }, [handleSessionExpiry, refreshPushStatus])
+
+  const disableClosedAppPush = useCallback(async () => {
+    setPushSubscriptionBusy(true)
+    setPushSubscriptionError('')
+    try {
+      if ('serviceWorker' in navigator) {
+        const registration = await navigator.serviceWorker.getRegistration()
+        const existingSubscription = registration ? await registration.pushManager.getSubscription() : null
+        if (existingSubscription) {
+          await existingSubscription.unsubscribe()
+        }
+      }
+      await deletePushSubscription()
+      await refreshPushStatus()
+    } catch (err) {
+      const msg = (err as Error).message ?? ''
+      if (!handleSessionExpiry(msg)) {
+        setPushSubscriptionError(msg || 'Failed to disable closed-app push')
+      }
+    } finally {
+      setPushSubscriptionBusy(false)
+    }
+  }, [handleSessionExpiry, refreshPushStatus])
 
   const syncAttendanceState = useCallback(async (opts?: { forceDayOrderFetch?: boolean; notifyOnChange?: boolean }) => {
     const nowTs = Date.now()
@@ -3080,8 +3234,12 @@ export default function App() {
             onLogout={handleLogout}
             attendanceAlertPermission={attendanceAlertPermission}
             onEnableAttendanceAlerts={() => { void requestAttendanceAlertsPermission() }}
+            onEnableClosedPush={() => { void enableClosedAppPush() }}
+            onDisableClosedPush={() => { void disableClosedAppPush() }}
             pushDesignStatus={pushDesignStatus}
             pushDesignError={pushDesignError}
+            pushSubscriptionBusy={pushSubscriptionBusy}
+            pushSubscriptionError={pushSubscriptionError}
           />
         )}
       </main>
