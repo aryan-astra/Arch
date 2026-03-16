@@ -876,7 +876,10 @@ export async function fetchNotificationCount(): Promise<number> {
 
 export interface PushDesignStatus {
   enabled: boolean
-  phase: 'design-only' | 'subscription-ready'
+  phase: 'design-only' | 'subscription-ready' | 'subscription-stored'
+  publicKeyAvailable: boolean
+  publicKey: string
+  subscriptionStored: boolean
   requirements: string[]
   notes: string[]
 }
@@ -890,6 +893,42 @@ export async function fetchPushDesignStatus(): Promise<PushDesignStatus> {
   await throwIfUnauthorized(resp)
   if (!resp.ok) throw new Error(`Server error: HTTP ${resp.status}`)
   return await resp.json() as PushDesignStatus
+}
+
+export async function fetchPushPublicKey(): Promise<string> {
+  const token = getSessionToken()
+  if (!token) throw new Error('Not authenticated')
+  const resp = await fetch('/auth/push/public-key', {
+    headers: { 'Accept': 'application/json', 'X-Session-Token': token },
+  })
+  await throwIfUnauthorized(resp)
+  if (!resp.ok) throw new Error(`Server error: HTTP ${resp.status}`)
+  const body = await resp.json() as { publicKey?: string }
+  if (!body.publicKey) throw new Error('Push public key is missing on server')
+  return body.publicKey
+}
+
+export async function savePushSubscription(subscription: PushSubscriptionJSON): Promise<void> {
+  const token = getSessionToken()
+  if (!token) throw new Error('Not authenticated')
+  const resp = await fetch('/auth/push/subscription', {
+    method: 'POST',
+    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json', 'X-Session-Token': token },
+    body: JSON.stringify({ subscription }),
+  })
+  await throwIfUnauthorized(resp)
+  if (!resp.ok) throw new Error(`Server error: HTTP ${resp.status}`)
+}
+
+export async function deletePushSubscription(): Promise<void> {
+  const token = getSessionToken()
+  if (!token) throw new Error('Not authenticated')
+  const resp = await fetch('/auth/push/subscription', {
+    method: 'DELETE',
+    headers: { 'Accept': 'application/json', 'X-Session-Token': token },
+  })
+  await throwIfUnauthorized(resp)
+  if (!resp.ok) throw new Error(`Server error: HTTP ${resp.status}`)
 }
 
 export async function validateSession(): Promise<{ valid: boolean; email?: string; reason?: string }> {

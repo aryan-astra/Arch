@@ -73,9 +73,9 @@ Useful scripts:
 - `SRM_TLS_INSECURE` (optional, default unset): set to `1` only if SRM TLS chain fails in your environment.
 - `ADMIN_USER` (optional, default `as6977`): admin account allowed for metrics endpoint.
 - `ADMIN_METRICS_TOKEN` (recommended): required for `/auth/admin/metrics` access.
-- `WEB_PUSH_PUBLIC_KEY` (future closed-app push): VAPID public key.
-- `WEB_PUSH_PRIVATE_KEY` (future closed-app push): VAPID private key.
-- `WEB_PUSH_SUBJECT` (future closed-app push): contact URI like `mailto:you@example.com`.
+- `WEB_PUSH_PUBLIC_KEY` (required for closed-app push subscribe): VAPID public key.
+- `WEB_PUSH_PRIVATE_KEY` (required for sender worker rollout): VAPID private key.
+- `WEB_PUSH_SUBJECT` (required for sender worker rollout): contact URI like `mailto:you@example.com`.
 
 ## Admin active-user metrics
 
@@ -104,16 +104,31 @@ This prevents uncontrolled localStorage growth while keeping fast startup for th
 - For stable always-on sessions, use a paid always-on Render instance + Redis.
 - If free tier is kept, occasional re-auth after idle/restart is expected.
 
-## Closed-app push design status
+## Closed-app push subscription beta
 
-- Design scaffolding is now available at `GET /auth/push/status` (authenticated).
-- Current phase:
-  - `design-only` when VAPID env vars are not configured
-  - `subscription-ready` when push keys + subject are configured
-- Final rollout still requires:
-  - subscription persistence endpoint
-  - sender worker triggered by attendance deltas
-  - subscription cleanup for expired endpoints
+Authenticated endpoints:
+
+- `GET /auth/push/status` → rollout phase + requirements + `subscriptionStored`
+- `GET /auth/push/public-key` → VAPID public key for `PushManager.subscribe`
+- `POST /auth/push/subscription` → stores subscription payload for logged-in user
+- `DELETE /auth/push/subscription` → removes stored subscription for logged-in user
+
+Current phases:
+
+- `design-only` when VAPID env vars are incomplete
+- `subscription-ready` when keys are configured but this account has not subscribed yet
+- `subscription-stored` when this account is already subscribed
+
+What is done now:
+
+- Profile screen can enable/disable closed-app push subscription per account.
+- Backend stores subscriptions in Redis when `REDIS_URL` exists, otherwise in memory.
+- Admin metrics and `/auth/health` include push subscription counts.
+
+Still pending for full delivery:
+
+- sender worker that dispatches web push payloads on attendance deltas
+- automatic cleanup for expired push endpoints (410/404 invalidation)
 
 ## Speed and performance engineering
 
