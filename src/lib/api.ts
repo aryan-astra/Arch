@@ -603,7 +603,15 @@ export async function fetchTimetableProfileAndCredits(): Promise<TimetableProfil
   }
 
   if (Object.keys(timetableByDay).length < 3) {
-    timetableByDay = profilePatch.batch === 1 ? {} : { ...BATCH2_TIMETABLE }
+    timetableByDay = profilePatch.batch === 2
+      ? {
+        1: [...(BATCH2_TIMETABLE[1] ?? [])],
+        2: [...(BATCH2_TIMETABLE[2] ?? [])],
+        3: [...(BATCH2_TIMETABLE[3] ?? [])],
+        4: [...(BATCH2_TIMETABLE[4] ?? [])],
+        5: [...(BATCH2_TIMETABLE[5] ?? [])],
+      }
+      : {}
   }
 
   return {
