@@ -30,6 +30,7 @@ const PROXY_TIMEOUT_MS = 30000
 const LOGIN_TIMEOUT_RETRIES = 1
 const RETRY_BACKOFF_MS = 700
 const SESSION_KEY_PREFIX = 'arch:session:'
+const SESSION_REDIS_WRITE_INTERVAL_MS = 10 * 60 * 1000
 const REDIS_URL = process.env.REDIS_URL || process.env.RENDER_REDIS_URL || ''
 const SRM_TLS_INSECURE = process.env.SRM_TLS_INSECURE === '1'
 const ADMIN_USER = String(process.env.ADMIN_USER || 'as6977').trim().toLowerCase()
@@ -128,7 +129,9 @@ async function deleteSession(token) {
 async function getActiveSession(token) {
   if (!token || typeof token !== 'string') return null
   let session = null
+  let fromRedis = false
   if (redisClient) {
+    fromRedis = true
     const raw = await redisClient.get(sessionKey(token))
     if (!raw) return null
     try {
@@ -142,7 +145,11 @@ async function getActiveSession(token) {
     session = sessions.get(token)
   }
   if (!session) return null
-  if (typeof session.expiresAt === 'number' && session.expiresAt <= Date.now()) {
+  if (!fromRedis && typeof session.expiresAt === 'number' && session.expiresAt <= Date.now()) {
+    await deleteSession(token)
+    return null
+  }
+  if (fromRedis && (!session.cookieString || !session.email)) {
     await deleteSession(token)
     return null
   }
@@ -152,8 +159,29 @@ async function getActiveSession(token) {
 async function touchSession(token, session) {
   const ttl = session.trusted ? TRUSTED_TTL_MS : BROWSER_TTL_MS
   const now = Date.now()
-  session.lastSeenAt = now
   session.expiresAt = now + ttl
+
+  if (redisClient) {
+    const key = sessionKey(token)
+    const shouldRewritePayload =
+      typeof session.lastSeenAt !== 'number' ||
+      (now - session.lastSeenAt) >= SESSION_REDIS_WRITE_INTERVAL_MS
+
+    if (shouldRewritePayload) {
+      session.lastSeenAt = now
+      await persistSession(token, session)
+      return
+    }
+
+    if (typeof redisClient.pExpire === 'function') {
+      await redisClient.pExpire(key, ttl)
+    } else {
+      await redisClient.expire(key, Math.max(1, Math.ceil(ttl / 1000)))
+    }
+    return
+  }
+
+  session.lastSeenAt = now
   await persistSession(token, session)
 }
 
@@ -261,10 +289,7 @@ async function listActiveSessions() {
       if (!raw) continue
       try {
         const session = JSON.parse(raw)
-        if (typeof session?.expiresAt === 'number' && session.expiresAt <= Date.now()) {
-          await redisClient.del(key)
-          continue
-        }
+        if (!session?.email || !session?.cookieString) continue
         active.push({ token: key.replace(SESSION_KEY_PREFIX, ''), session })
       } catch {
         await redisClient.del(key)
