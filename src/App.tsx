@@ -5,16 +5,14 @@ import {
   classesSafeToMiss, classesNeededToReach,
 } from "./data/real-data"
 import type { AttendanceCourse, InternalMark, StudentInfo } from "./data/real-data"
-import { BATCH2_TIMETABLE, getTodayClasses, fetchAttendance, fetchCurrentDayOrder, fetchProfilePatch, fetchTimetableProfileAndCredits, fetchAcademicCalendarEvents, fetchNotificationCount, fetchPushDesignStatus, fetchPushPublicKey, savePushSubscription, deletePushSubscription, validateSession, loginUser, logoutUser, getSessionToken } from "./lib/api"
-import type { AcademicCalendarEvent, PushDesignStatus } from "./lib/api"
+import { BATCH2_TIMETABLE, getTodayClasses, fetchAttendance, fetchCurrentDayOrder, fetchProfilePatch, fetchTimetableProfileAndCredits, fetchAcademicCalendarEvents, fetchNotificationCount, fetchPushDesignStatus, fetchPushPublicKey, savePushSubscription, fetchAdminSelfMetrics, validateSession, loginUser, logoutUser, getSessionToken } from "./lib/api"
+import type { AcademicCalendarEvent, AdminSelfMetrics } from "./lib/api"
 import * as sessionStorageLib from "./lib/storage"
 import { ExpandableNav } from "./components/expandable-tabs"
 import { AcademiaLogo } from "./components/AcademiaLogo"
 import { HeroBadge } from "./components/HeroBadge"
-import finalArchLogo from "./assets/final-arch-logo.svg"
-import archLogo from "./assets/arch-logo.svg"
-import academiaPlusLogo from "./assets/academia-plus-logo.svg"
-import archLogoTransparent from "./assets/arch-logo-transparent.png"
+import { ProgressiveBlur } from "./components/ProgressiveBlur"
+import changelogEntriesData from "./data/changelog.json"
 
 const loadSessionSnapshot = sessionStorageLib.loadSessionSnapshot
 const persistSessionSnapshot = sessionStorageLib.persistSessionSnapshot
@@ -33,7 +31,7 @@ const EMPTY_STUDENT: StudentInfo = {
 }
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
-type Screen = "home" | "attendance" | "schedule" | "calendar" | "profile"
+type Screen = "home" | "attendance" | "schedule" | "calendar" | "profile" | "cooking"
 type LoginStep = "email" | "password"
 const THEME_OPTIONS = [
   { key: "dark", label: "Midnight" },
@@ -48,11 +46,63 @@ const THEME_OPTIONS = [
   { key: "darkmatter", label: "Ember" },
 ] as const
 type Theme = (typeof THEME_OPTIONS)[number]["key"]
-type ThemeGalleryItem = {
-  key: Theme
-  label: string
-  colors: [string, string, string]
+type ChangelogEntry = {
+  version: string
+  summary: string
+  added: string[]
+  improved: string[]
+  removed?: string[]
 }
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
+}
+
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+}
+
+function normalizeChangelogEntries(source: unknown): ChangelogEntry[] {
+  if (!Array.isArray(source)) return []
+  return source.flatMap((rawEntry) => {
+    if (!isRecord(rawEntry)) return []
+    const version = typeof rawEntry.version === "string" ? rawEntry.version.trim() : ""
+    const summary = typeof rawEntry.summary === "string" ? rawEntry.summary.trim() : ""
+    const added = toStringArray(rawEntry.added)
+    const improved = toStringArray(rawEntry.improved)
+    const removed = toStringArray(rawEntry.removed)
+    if (!version || !summary || added.length === 0 || improved.length === 0) return []
+    return [{
+      version,
+      summary,
+      added,
+      improved,
+      removed: removed.length > 0 ? removed : undefined,
+    }]
+  })
+}
+
+function parseVersionSegments(version: string): number[] {
+  const cleanVersion = version.trim().replace(/^[^\d]*/, "")
+  return cleanVersion.split(".").map((segment) => {
+    const parsed = Number.parseInt(segment, 10)
+    return Number.isFinite(parsed) ? parsed : 0
+  })
+}
+
+function compareChangelogVersions(a: string, b: string): number {
+  const aParts = parseVersionSegments(a)
+  const bParts = parseVersionSegments(b)
+  const maxLen = Math.max(aParts.length, bParts.length)
+  for (let idx = 0; idx < maxLen; idx += 1) {
+    const aValue = aParts[idx] ?? 0
+    const bValue = bParts[idx] ?? 0
+    if (aValue !== bValue) return aValue - bValue
+  }
+  return 0
+}
+
 const THEME_KEYS = new Set<Theme>(THEME_OPTIONS.map((theme) => theme.key))
 const DARK_THEMES = new Set<Theme>([
   "dark",
@@ -61,24 +111,17 @@ const DARK_THEMES = new Set<Theme>([
   "starry-night",
   "darkmatter",
 ])
-const THEME_GALLERY: ThemeGalleryItem[] = [
-  { key: 'dark', label: 'Midnight', colors: ['#0B0C10', '#17181C', '#4F7EFF'] },
-  { key: 'light', label: 'Daylight', colors: ['#F9F9FB', '#D1D1D6', '#111827'] },
-  { key: 'pink', label: 'Rose', colors: ['#FFF3F9', '#FF6CC2', '#D61B84'] },
-  { key: 'catppuccin', label: 'Lilac', colors: ['#F6F0FF', '#C8B6FF', '#8D6BFF'] },
-  { key: 'graphite', label: 'Graphite', colors: ['#111215', '#3A3A3C', '#7C8798'] },
-  { key: 'cosmic-night', label: 'Nebula', colors: ['#0F1022', '#3A2A68', '#A889FF'] },
-  { key: 'northern-lights', label: 'Mint', colors: ['#F1FFF7', '#7FE3B4', '#3AB780'] },
-  { key: 'starry-night', label: 'Cobalt', colors: ['#0E172F', '#274981', '#4B9DFF'] },
-  { key: 'mocha-mousse', label: 'Sand', colors: ['#FFF3E4', '#E5B68A', '#B3794E'] },
-  { key: 'darkmatter', label: 'Ember', colors: ['#111215', '#4A2A18', '#FF8A3D'] },
-]
-const LOGO_GALLERY = [
-  { id: 'final', label: 'Final Arch Mark', src: finalArchLogo },
-  { id: 'wordmark', label: 'Arch Wordmark', src: archLogo },
-  { id: 'academia-plus', label: 'Academia Plus Mark', src: academiaPlusLogo },
-  { id: 'transparent', label: 'Transparent Badge', src: archLogoTransparent },
-] as const
+const CHANGELOG_ENTRIES = normalizeChangelogEntries(changelogEntriesData)
+const LATEST_CHANGELOG_INDEX = CHANGELOG_ENTRIES.length > 0
+  ? CHANGELOG_ENTRIES.reduce(
+    (bestIndex, entry, idx) =>
+      compareChangelogVersions(entry.version, CHANGELOG_ENTRIES[bestIndex]?.version ?? "") > 0
+        ? idx
+        : bestIndex,
+    0,
+  )
+  : -1
+const CURRENT_APP_VERSION = CHANGELOG_ENTRIES[LATEST_CHANGELOG_INDEX]?.version ?? 'v1.0.0'
 const MarksLineChart = lazy(() => import("./components/MarksLineChart"))
 const PASS_MARK_PCT = 50
 interface BeforeInstallPromptEvent extends Event {
@@ -136,6 +179,14 @@ function vapidBase64ToArrayBuffer(base64String: string): ArrayBuffer {
     outputArray[i] = rawData.charCodeAt(i)
   }
   return buffer
+}
+
+const ADMIN_PROFILE_ID = 'as6977'
+function isAdminProfileUser(identity: string): boolean {
+  const normalized = identity.trim().toLowerCase()
+  if (!normalized) return false
+  const localPart = normalized.split('@')[0] || ''
+  return normalized === ADMIN_PROFILE_ID || localPart === ADMIN_PROFILE_ID
 }
 
 function fmtTimeSlot(slot: string): { start: string; end: string } {
@@ -2164,12 +2215,11 @@ function ProfileScreen({
   onLogout,
   attendanceAlertPermission,
   onEnableAttendanceAlerts,
-  onEnableClosedPush,
-  onDisableClosedPush,
-  pushDesignStatus,
-  pushDesignError,
-  pushSubscriptionBusy,
-  pushSubscriptionError,
+  onOpenCooking,
+  showAdminMetrics,
+  adminMetrics,
+  adminMetricsLoading,
+  adminMetricsError,
 }: {
   student: StudentInfo
   theme: Theme
@@ -2177,24 +2227,12 @@ function ProfileScreen({
   onLogout: () => void
   attendanceAlertPermission: NotificationPermission | 'unsupported'
   onEnableAttendanceAlerts: () => void
-  onEnableClosedPush: () => void
-  onDisableClosedPush: () => void
-  pushDesignStatus: PushDesignStatus | null
-  pushDesignError: string
-  pushSubscriptionBusy: boolean
-  pushSubscriptionError: string
+  onOpenCooking: () => void
+  showAdminMetrics: boolean
+  adminMetrics: AdminSelfMetrics | null
+  adminMetricsLoading: boolean
+  adminMetricsError: string
 }) {
-  const isWebPushSupported = supportsWebPush()
-  const hasStoredPushSubscription = pushDesignStatus?.subscriptionStored === true
-  const pushPhaseLabel =
-    pushDesignStatus?.phase === 'subscription-stored'
-      ? 'Subscribed'
-      : pushDesignStatus?.phase === 'subscription-ready'
-        ? 'Config ready'
-      : pushDesignStatus?.phase === 'design-only'
-        ? 'Design complete'
-        : 'Loading'
-
   return (
     <>
       <div className="profile-hero">
@@ -2290,39 +2328,6 @@ function ProfileScreen({
       </div>
 
       <div className="section-header">
-        <span className="section-title">Color Gallery</span>
-      </div>
-      <div className="theme-gallery-grid">
-        {THEME_GALLERY.map((item) => (
-          <div key={item.key} className={`theme-gallery-card${theme === item.key ? ' active' : ''}`}>
-            <div className="theme-gallery-head">
-              <span>{item.label}</span>
-              {theme === item.key && <span className="theme-gallery-active">Active</span>}
-            </div>
-            <div className="theme-gallery-swatches">
-              {item.colors.map((color) => (
-                <span key={color} className="theme-gallery-swatch" style={{ background: color }} />
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div className="section-header">
-        <span className="section-title">Logo Gallery</span>
-      </div>
-      <div className="logo-gallery-grid">
-        {LOGO_GALLERY.map((logo) => (
-          <div key={logo.id} className="logo-gallery-card">
-            <div className="logo-gallery-image-wrap">
-              <img src={logo.src} alt={logo.label} className="logo-gallery-image" />
-            </div>
-            <div className="logo-gallery-label">{logo.label}</div>
-          </div>
-        ))}
-      </div>
-
-      <div className="section-header">
         <span className="section-title">Attendance Alerts</span>
       </div>
       <div className="btn-row">
@@ -2346,66 +2351,49 @@ function ProfileScreen({
       </div>
 
       <div className="section-header">
-        <span className="section-title">Closed-app Push</span>
+        <span className="section-title">Updates</span>
       </div>
-      <div className="push-design-card">
-        <div className="push-design-top">
-          <span className={`push-design-badge${pushDesignStatus?.enabled ? ' ready' : ''}${hasStoredPushSubscription ? ' active' : ''}`}>{pushPhaseLabel}</span>
-          <span className="push-design-meta">
-            {isWebPushSupported
-              ? pushDesignStatus?.enabled
-                ? 'Ready for device subscription'
-                : 'Awaiting server VAPID setup'
-              : 'Push unsupported on this browser'}
-          </span>
-        </div>
-        <div className="push-design-copy">
-          {pushSubscriptionError
-            ? pushSubscriptionError
-            : pushDesignError
-              ? `Unable to fetch push design status: ${pushDesignError}`
-            : pushDesignStatus?.notes?.[0] ?? 'Closed-app notifications need VAPID keys, subscription storage, and a sender worker trigger.'}
-        </div>
-        <div className="push-design-list">
-          {(pushDesignStatus?.requirements ?? [
-            'Configure WEB_PUSH_PUBLIC_KEY and WEB_PUSH_PRIVATE_KEY',
-            'Store subscriptions per authenticated user',
-            'Run sender worker on attendance updates',
-          ]).slice(0, 3).map((step) => (
-            <div key={step} className="push-design-item">{step}</div>
-          ))}
-        </div>
-        <div className="push-design-actions">
-          <button
-            className={`btn-list-item secondary${hasStoredPushSubscription ? ' active' : ''}`}
-            onClick={onEnableClosedPush}
-            disabled={
-              pushSubscriptionBusy ||
-              hasStoredPushSubscription ||
-              !isWebPushSupported ||
-              !pushDesignStatus?.publicKeyAvailable
-            }
-          >
-            <Icons.Bell />
-            {pushSubscriptionBusy
-              ? 'Updating push settings...'
-              : hasStoredPushSubscription
-                ? 'Closed-app push subscribed'
-                : 'Enable closed-app push beta'}
-          </button>
-          <button
-            className="btn-list-item secondary"
-            onClick={onDisableClosedPush}
-            disabled={pushSubscriptionBusy || !hasStoredPushSubscription}
-          >
-            <Icons.Bell />
-            Disable closed-app push beta
-          </button>
-        </div>
-        <div className="profile-alert-note push-design-note">
-          Subscriptions are saved per account. Delivery still depends on sender-worker rollout.
-        </div>
+      <div className="btn-row">
+        <button className="btn-list-item secondary" onClick={onOpenCooking}>
+          <Icons.Trend />
+          Cooking
+          <span className="btn-row-meta">{CURRENT_APP_VERSION}</span>
+        </button>
       </div>
+      <div className="profile-alert-note">
+        Open to see short version-wise changes.
+      </div>
+
+      {showAdminMetrics && (
+        <>
+          <div className="section-header">
+            <span className="section-title">Admin App Metrics</span>
+          </div>
+          <div className="card-group">
+            <div className="card-row">
+              <span className="card-row-key">Active users</span>
+              <span className="card-row-val">{adminMetricsLoading ? 'Loading…' : `${adminMetrics?.activeUserCount ?? 0}`}</span>
+            </div>
+            <div className="card-row">
+              <span className="card-row-key">Active sessions</span>
+              <span className="card-row-val">{adminMetricsLoading ? 'Loading…' : `${adminMetrics?.activeSessionCount ?? 0}`}</span>
+            </div>
+            <div className="card-row">
+              <span className="card-row-key">Push subscriptions</span>
+              <span className="card-row-val">{adminMetricsLoading ? 'Loading…' : `${adminMetrics?.pushSubscriptionCount ?? 0}`}</span>
+            </div>
+            <div className="card-row">
+              <span className="card-row-key">Session store</span>
+              <span className="card-row-val">{adminMetricsLoading ? 'Loading…' : (adminMetrics?.store ?? 'unknown')}</span>
+            </div>
+          </div>
+          <div className="profile-alert-note">
+            {adminMetricsError
+              ? `Unable to load admin metrics: ${adminMetricsError}`
+              : `Visible only to ${ADMIN_PROFILE_ID}.`}
+          </div>
+        </>
+      )}
 
       <div className="section-header">
         <span className="section-title">Support</span>
@@ -2426,6 +2414,64 @@ function ProfileScreen({
       </div>
       <div className="page-spacer" />
     </>
+  )
+}
+
+function CookingScreen({ onBack }: { onBack: () => void }) {
+  return (
+    <div className="cooking-screen">
+      <ProgressiveBlur
+        className="cooking-progressive-blur cooking-progressive-blur-bottom"
+        position="bottom"
+        backgroundColor="#000000"
+        height="92px"
+        blurAmount="2px"
+      />
+
+      <div className="cooking-scroll">
+        <div className="cooking-header">
+          <button className="cooking-back-btn" onClick={onBack}>
+            <Icons.ChevronLeft />
+            Back
+          </button>
+          <div className="cooking-title">Cooking</div>
+          <div className="cooking-current">{CURRENT_APP_VERSION}</div>
+        </div>
+        <div className="cooking-subtitle">Latest updates in one place.</div>
+
+        <div className="cooking-list">
+          {CHANGELOG_ENTRIES.map((entry, idx) => (
+            <details key={entry.version} className="cooking-item" open={idx === LATEST_CHANGELOG_INDEX}>
+              <summary className="cooking-summary">
+                <span className="cooking-version-text">{entry.version}</span>
+                <span className="cooking-summary-text">({entry.summary})</span>
+              </summary>
+              <div className="cooking-body">
+                {entry.added.map((line, lineIdx) => (
+                  <div key={`${entry.version}-added-${lineIdx}`} className="cooking-row">
+                    <span className="cooking-sign cooking-sign-plus" aria-hidden>+</span>
+                    <span className="cooking-row-text">{line}</span>
+                  </div>
+                ))}
+                {entry.improved.map((line, lineIdx) => (
+                  <div key={`${entry.version}-improved-${lineIdx}`} className="cooking-row">
+                    <span className="cooking-sign cooking-sign-plus" aria-hidden>+</span>
+                    <span className="cooking-row-text">{line}</span>
+                  </div>
+                ))}
+                {entry.removed?.map((line, lineIdx) => (
+                  <div key={`${entry.version}-removed-${lineIdx}`} className="cooking-row">
+                    <span className="cooking-sign cooking-sign-minus" aria-hidden>-</span>
+                    <span className="cooking-row-text">{line}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
+          ))}
+        </div>
+        <div className="page-spacer" />
+      </div>
+    </div>
   )
 }
 
@@ -2497,10 +2543,9 @@ export default function App() {
     return bootStudentBatch === 1 ? {} : cloneDefaultTimetableByDay()
   })
   const [notificationCount, setNotificationCount] = useState(0)
-  const [pushDesignStatus, setPushDesignStatus] = useState<PushDesignStatus | null>(null)
-  const [pushDesignError, setPushDesignError] = useState('')
-  const [pushSubscriptionBusy, setPushSubscriptionBusy] = useState(false)
-  const [pushSubscriptionError, setPushSubscriptionError] = useState('')
+  const [adminMetrics, setAdminMetrics] = useState<AdminSelfMetrics | null>(null)
+  const [adminMetricsLoading, setAdminMetricsLoading] = useState(false)
+  const [adminMetricsError, setAdminMetricsError] = useState('')
   const [attendanceAlertPermission, setAttendanceAlertPermission] = useState<NotificationPermission | 'unsupported'>(() => {
     if (!('Notification' in window)) return 'unsupported'
     return Notification.permission
@@ -2513,6 +2558,8 @@ export default function App() {
   const loggedEmailRef = useRef(loggedEmail)
   const studentRef = useRef(student)
   const creditsRef = useRef(courseCredits)
+  const pushAutoEnrollAttemptedRef = useRef(false)
+  const showAdminMetrics = useMemo(() => isAdminProfileUser(loggedEmail), [loggedEmail])
   useEffect(() => { dayOrderRef.current = dayOrder }, [dayOrder])
   useEffect(() => { loggedEmailRef.current = loggedEmail }, [loggedEmail])
   useEffect(() => { studentRef.current = student }, [student])
@@ -2586,18 +2633,63 @@ export default function App() {
     applyTheme(t)
   }
 
+  const ensureClosedAppPushEnrollment = useCallback(async () => {
+    if (!supportsWebPush()) return
+    const pushStatus = await fetchPushDesignStatus()
+    if (!pushStatus.enabled || !pushStatus.publicKeyAvailable) return
+
+    const publicKey = pushStatus.publicKey || await fetchPushPublicKey()
+    if (!publicKey) return
+
+    let registration = await navigator.serviceWorker.getRegistration().catch((err) => {
+      console.warn('[closed-push] Failed to access service worker registration', err)
+      return null
+    })
+    if (!registration) {
+      registration = await navigator.serviceWorker.register('/sw.js')
+    }
+    if (!registration.active) {
+      registration = await navigator.serviceWorker.ready
+    }
+
+    let subscription = await registration.pushManager.getSubscription()
+    if (!subscription) {
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: vapidBase64ToArrayBuffer(publicKey),
+      })
+    }
+    await savePushSubscription(subscription.toJSON())
+  }, [])
+
   const requestAttendanceAlertsPermission = useCallback(async () => {
     if (!('Notification' in window)) {
       setAttendanceAlertPermission('unsupported')
       return
     }
-    if (Notification.permission === 'granted') {
-      setAttendanceAlertPermission('granted')
-      return
+    let permission = Notification.permission
+    if (permission !== 'granted') {
+      permission = await Notification.requestPermission()
     }
-    const permission = await Notification.requestPermission()
     setAttendanceAlertPermission(permission)
-  }, [])
+    if (permission !== 'granted') return
+
+    pushAutoEnrollAttemptedRef.current = true
+    try {
+      await ensureClosedAppPushEnrollment()
+    } catch (err) {
+      console.warn('[closed-push] Auto-enrollment skipped:', err)
+    }
+  }, [ensureClosedAppPushEnrollment])
+
+  useEffect(() => {
+    if (!loggedIn || attendanceAlertPermission !== 'granted') return
+    if (pushAutoEnrollAttemptedRef.current) return
+    pushAutoEnrollAttemptedRef.current = true
+    ensureClosedAppPushEnrollment().catch((err) => {
+      console.warn('[closed-push] Background auto-enrollment skipped:', err)
+    })
+  }, [loggedIn, attendanceAlertPermission, ensureClosedAppPushEnrollment])
 
   const sendAttendanceUpdateNotifications = useCallback(async (updates: AttendanceUpdateNotice[]) => {
     if (updates.length === 0) return
@@ -2778,10 +2870,9 @@ export default function App() {
     setCalendarError('')
     setTimetableByDay(cloneDefaultTimetableByDay())
     setNotificationCount(0)
-    setPushDesignStatus(null)
-    setPushDesignError('')
-    setPushSubscriptionBusy(false)
-    setPushSubscriptionError('')
+    setAdminMetrics(null)
+    setAdminMetricsLoading(false)
+    setAdminMetricsError('')
     setLastUpdated(null)
     setLoggedEmail('')
     setLoggedIn(false)
@@ -2790,6 +2881,7 @@ export default function App() {
     dayOrderRef.current = null
     dayOrderSyncedAtRef.current = 0
     attendanceSnapshotRef.current = null
+    pushAutoEnrollAttemptedRef.current = false
     pollInFlightRef.current = false
     clearPollTimer()
   }, [clearPollTimer, setDayOrder])
@@ -2846,111 +2938,44 @@ export default function App() {
     }
   }, [loggedIn, resetUserSessionState])
 
-  const handleSessionExpiry = useCallback((msg: string): boolean => {
-    if (!msg.includes('Session expired') && !msg.includes('Not authenticated')) return false
-    logoutUser().catch(() => {})
-    resetUserSessionState()
-    return true
-  }, [resetUserSessionState])
-
-  const refreshPushStatus = useCallback(async (): Promise<PushDesignStatus | null> => {
-    try {
-      const status = await fetchPushDesignStatus()
-      setPushDesignStatus(status)
-      setPushDesignError('')
-      return status
-    } catch (err) {
-      const msg = (err as Error).message ?? ''
-      if (handleSessionExpiry(msg)) return null
-      setPushDesignError(msg || 'Failed to load push design status')
-      return null
-    }
-  }, [handleSessionExpiry])
-
   useEffect(() => {
-    if (!loggedIn || screen !== 'profile') return
+    if (!loggedIn || !showAdminMetrics || screen !== 'profile') {
+      if (!showAdminMetrics) {
+        setAdminMetrics(null)
+        setAdminMetricsError('')
+      }
+      setAdminMetricsLoading(false)
+      return
+    }
+
     let disposed = false
-    setPushSubscriptionError('')
-    setPushDesignError('')
-    fetchPushDesignStatus()
-      .then((status) => {
+    setAdminMetricsLoading(true)
+    setAdminMetricsError('')
+
+    fetchAdminSelfMetrics()
+      .then((metrics) => {
         if (disposed) return
-        setPushDesignStatus(status)
+        setAdminMetrics(metrics)
       })
       .catch((err) => {
         if (disposed) return
         const msg = (err as Error).message ?? ''
-        if (handleSessionExpiry(msg)) {
+        if (msg.includes('Session expired') || msg.includes('Not authenticated')) {
+          logoutUser().catch(() => {})
+          resetUserSessionState()
           disposed = true
           return
         }
-        setPushDesignError(msg || 'Failed to load push design status')
+        setAdminMetricsError(msg || 'Failed to load admin metrics')
       })
-    return () => { disposed = true }
-  }, [loggedIn, screen, handleSessionExpiry])
+      .finally(() => {
+        if (!disposed) setAdminMetricsLoading(false)
+      })
 
-  const enableClosedAppPush = useCallback(async () => {
-    setPushSubscriptionBusy(true)
-    setPushSubscriptionError('')
-    try {
-      if (!supportsWebPush()) {
-        throw new Error('Web Push is not supported on this browser/device.')
-      }
-      if (Notification.permission === 'default') {
-        const permission = await Notification.requestPermission()
-        setAttendanceAlertPermission(permission)
-      }
-      if (Notification.permission !== 'granted') {
-        throw new Error('Notification permission is denied. Allow notifications in browser settings.')
-      }
-      const existingRegistration = await navigator.serviceWorker.getRegistration()
-      if (!existingRegistration) {
-        await navigator.serviceWorker.register('/sw.js')
-      }
-      const registration = await navigator.serviceWorker.ready
-      const publicKey = await fetchPushPublicKey()
-      const appServerKey = vapidBase64ToArrayBuffer(publicKey)
-      let subscription = await registration.pushManager.getSubscription()
-      if (!subscription) {
-        subscription = await registration.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: appServerKey,
-        })
-      }
-      await savePushSubscription(subscription.toJSON())
-      await refreshPushStatus()
-    } catch (err) {
-      const msg = (err as Error).message ?? ''
-      if (!handleSessionExpiry(msg)) {
-        setPushSubscriptionError(msg || 'Failed to enable closed-app push')
-      }
-    } finally {
-      setPushSubscriptionBusy(false)
+    return () => {
+      disposed = true
     }
-  }, [handleSessionExpiry, refreshPushStatus])
-
-  const disableClosedAppPush = useCallback(async () => {
-    setPushSubscriptionBusy(true)
-    setPushSubscriptionError('')
-    try {
-      if ('serviceWorker' in navigator) {
-        const registration = await navigator.serviceWorker.getRegistration()
-        const existingSubscription = registration ? await registration.pushManager.getSubscription() : null
-        if (existingSubscription) {
-          await existingSubscription.unsubscribe()
-        }
-      }
-      await deletePushSubscription()
-      await refreshPushStatus()
-    } catch (err) {
-      const msg = (err as Error).message ?? ''
-      if (!handleSessionExpiry(msg)) {
-        setPushSubscriptionError(msg || 'Failed to disable closed-app push')
-      }
-    } finally {
-      setPushSubscriptionBusy(false)
-    }
-  }, [handleSessionExpiry, refreshPushStatus])
+  }, [loggedIn, showAdminMetrics, screen, resetUserSessionState])
 
   const syncAttendanceState = useCallback(async (opts?: { forceDayOrderFetch?: boolean; notifyOnChange?: boolean }) => {
     const nowTs = Date.now()
@@ -3145,11 +3170,11 @@ export default function App() {
   const installName = toTitle(firstName(student.name || loggedEmail.split('@')[0] || 'Student'))
 
   return (
-    <div className="app">
+    <div className={screen === 'cooking' ? 'app cooking-mode' : 'app'}>
       {/* Content */}
-      <main className="page-content">
+      <main className={screen === 'cooking' ? 'page-content cooking-page-content' : 'page-content'}>
         {/* PWA banner — Android */}
-        {showPwa && (
+        {screen !== 'cooking' && showPwa && (
           <div className="pwa-banner">
             <span style={{ fontSize: 18, display: 'inline-flex' }}><Icons.Phone /></span>
             <div className="pwa-banner-text">
@@ -3164,7 +3189,7 @@ export default function App() {
         )}
 
         {/* PWA banner — iOS Safari */}
-        {!showPwa && showIosPwa && (
+        {screen !== 'cooking' && !showPwa && showIosPwa && (
           <div className="pwa-banner">
             <span style={{ fontSize: 18, display: 'inline-flex' }}><Icons.Phone /></span>
             <div className="pwa-banner-text">
@@ -3182,12 +3207,12 @@ export default function App() {
         )}
 
         {/* Status banners — offline / update */}
-        {isOffline && (
+        {screen !== 'cooking' && isOffline && (
           <div className="status-banner offline">
             <span>No internet — showing cached data</span>
           </div>
         )}
-        {!isOffline && needUpdate && (
+        {screen !== 'cooking' && !isOffline && needUpdate && (
           <div className="status-banner update">
             <span>Update available</span>
             <button className="status-banner-btn" onClick={() => window.location.reload()}>Reload</button>
@@ -3195,7 +3220,7 @@ export default function App() {
         )}
 
         {/* Pull-to-refresh indicator */}
-        {pullPct > 0 && (
+        {screen !== 'cooking' && pullPct > 0 && (
           <div style={{ height: `${Math.round(pullPct * 44)}px`, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', opacity: pullPct, transition: 'opacity 0.1s' }}>
             <div className="ptr-spinner" style={{ transform: `rotate(${Math.round(pullPct * 270)}deg)` }} />
           </div>
@@ -3234,21 +3259,25 @@ export default function App() {
             onLogout={handleLogout}
             attendanceAlertPermission={attendanceAlertPermission}
             onEnableAttendanceAlerts={() => { void requestAttendanceAlertsPermission() }}
-            onEnableClosedPush={() => { void enableClosedAppPush() }}
-            onDisableClosedPush={() => { void disableClosedAppPush() }}
-            pushDesignStatus={pushDesignStatus}
-            pushDesignError={pushDesignError}
-            pushSubscriptionBusy={pushSubscriptionBusy}
-            pushSubscriptionError={pushSubscriptionError}
+            onOpenCooking={() => setScreen('cooking')}
+            showAdminMetrics={showAdminMetrics}
+            adminMetrics={adminMetrics}
+            adminMetricsLoading={adminMetricsLoading}
+            adminMetricsError={adminMetricsError}
           />
+        )}
+        {screen === "cooking" && (
+          <CookingScreen onBack={() => setScreen('profile')} />
         )}
       </main>
 
-      <ExpandableNav
-        tabs={navTabs}
-        activeKey={screen}
-        onSelect={(key) => setScreen(key as Screen)}
-      />
+      {screen !== 'cooking' && (
+        <ExpandableNav
+          tabs={navTabs}
+          activeKey={screen}
+          onSelect={(key) => setScreen(key as Screen)}
+        />
+      )}
     </div>
   )
 }

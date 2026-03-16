@@ -79,13 +79,35 @@ Useful scripts:
 
 ## Admin active-user metrics
 
-Use:
+Primary UX:
+
+- Logged in as `as6977`, open **Profile** tab to view:
+  - active user count
+  - active session count
+  - push subscription count
+  - session store mode
+
+API options (for backend ops/testing):
+
+Option A (header-token protected endpoint):
 
 ```bash
 curl -H "x-admin-user: as6977" -H "x-admin-token: <ADMIN_METRICS_TOKEN>" https://<render-service>.onrender.com/auth/admin/metrics
 ```
 
+Option B (session-auth endpoint, only for `as6977` login):
+
+```bash
+curl -H "x-session-token: <academia_session_token>" https://<render-service>.onrender.com/auth/admin/metrics/self
+```
+
 Returns active session count, unique active users, per-user session stats, and recent auth/logout events.
+
+## In-app version & changelog
+
+- Profile includes a **Cooking** option for all users.
+- Tapping **Cooking** opens a dedicated black-background changelog page.
+- Version rows are expandable and show short `Added / Improved / Removed` notes.
 
 ## Storage hygiene and garbage cleanup
 
@@ -104,7 +126,7 @@ This prevents uncontrolled localStorage growth while keeping fast startup for th
 - For stable always-on sessions, use a paid always-on Render instance + Redis.
 - If free tier is kept, occasional re-auth after idle/restart is expected.
 
-## Closed-app push subscription beta
+## Closed-app push subscription beta (internal)
 
 Authenticated endpoints:
 
@@ -121,9 +143,14 @@ Current phases:
 
 What is done now:
 
-- Profile screen can enable/disable closed-app push subscription per account.
+- Backend endpoints exist for internal testing.
 - Backend stores subscriptions in Redis when `REDIS_URL` exists, otherwise in memory.
 - Admin metrics and `/auth/health` include push subscription counts.
+- Attendance alert enable flow now auto-attempts closed-app push subscription when browser/device support + VAPID config are present.
+
+UI note:
+
+- Closed-app push has no separate user-facing section; it is integrated under Attendance Alerts.
 
 Still pending for full delivery:
 

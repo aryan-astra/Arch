@@ -1,0 +1,50 @@
+[
+  {
+    "version": "v1.0.5",
+    "summary": "alerts + cooking log",
+    "added": [
+      "Attendance Alerts now auto-enroll Web Push after notification permission is granted, so closed-app delivery starts without a second setup flow.",
+      "Cooking page now opens from Profile as a dedicated focused release-notes screen.",
+      "Version updates are grouped in expandable sections so users can quickly scan what changed."
+    ],
+    "improved": [
+      "Session lifecycle checks were tightened to better handle auth drift and reduce unexpected logout loops while moving across pages.",
+      "Mobile safe-area spacing and compact layout rhythm were polished for iPhone Safari and narrow Android screens.",
+      "Notification/push capability checks now fail more gracefully when service worker or browser push support is limited."
+    ],
+    "removed": [
+      "Internal beta/debug profile sections (theme/logo/push controls) were removed from normal user view to keep profile clean."
+    ]
+  },
+  {
+    "version": "v1.0.4",
+    "summary": "speed + cache stability",
+    "added": [
+      "Unread notification badge with lightweight polling to surface pending items without opening notifications first.",
+      "Per-user cache hygiene and stale data pruning to prevent old timetable/profile artifacts after account switches."
+    ],
+    "improved": [
+      "Batch-aware timetable mapping so schedule cards align better with live day order and actual section context.",
+      "Client chunk split strategy for faster repeat loads and lower parsing cost on mid-range mobile devices.",
+      "Session touch/refresh behavior to reduce payload rewrites and keep backend load compact during active use."
+    ],
+    "removed": [
+      "Excess duplicate local payload writes from hot paths were reduced to keep storage and network churn lower."
+    ]
+  },
+  {
+    "version": "v1.0.3",
+    "summary": "pwa + shell polish",
+    "added": [
+      "Safer PWA install prompts and service worker refresh flow for more predictable app upgrades.",
+      "Brand-aligned app shell styling with stronger visual hierarchy on compact portrait viewports."
+    ],
+    "improved": [
+      "Mobile-first layout density so key actions remain visible with fewer scroll hops on small displays.",
+      "Install banner overlap handling to avoid collisions with sticky navigation and bottom safe-area controls."
+    ],
+    "removed": [
+      "Legacy visual spacing inconsistencies between profile/action rows were cleaned up for tighter UI rhythm."
+    ]
+  }
+]
