@@ -52,6 +52,28 @@ function getAdjacentValue(cells: string[], idx: number): string {
   return next.trim()
 }
 
+function normalizeHeaderText(raw: string): string {
+  return raw
+    .replace(/\u00a0/g, ' ')
+    .replace(/[%():]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+}
+
+function findHeaderIndex(headers: string[], patterns: RegExp[]): number {
+  return headers.findIndex((header) => patterns.some((pattern) => pattern.test(header)))
+}
+
+function parseCourseCode(cell: Element | null, fallback: string): string {
+  const directText = cell?.firstChild?.nodeType === Node.TEXT_NODE
+    ? (cell.firstChild.textContent ?? '').trim()
+    : ''
+  const combined = (directText || fallback || '').trim()
+  const codeMatch = combined.toUpperCase().match(/[A-Z0-9]{5,}/)
+  return (codeMatch?.[0] ?? combined).trim()
+}
+
 // Parses the My_Attendance page HTML (data is embedded in a JS pageSanitizer.sanitize() string)
 function parseAttendancePage(html: string): LiveAttendanceResult {
   const innerHtml = extractInnerHtml(html)
@@ -109,28 +131,57 @@ function parseAttendancePage(html: string): LiveAttendanceResult {
     return header?.textContent?.includes('Hours Conducted') && header?.textContent?.includes('Attn')
   })
   if (attendanceTable) {
-    const rows = Array.from(attendanceTable.querySelectorAll('tr')).slice(1)
-    rows.forEach(row => {
-      const cells = row.querySelectorAll('td')
-      if (cells.length < 9) return
-      // Course code is first text node (before <br>) inside cells[0]
-      const codeNode = cells[0]?.firstChild
-      const code = (codeNode?.nodeType === 3 ? codeNode.textContent?.trim() : cells[0]?.childNodes[0]?.textContent?.trim()) ?? ''
-      const title = cells[1]?.textContent?.trim() ?? ''
-      // Category column (Theory/Practical)
-      const courseType = cells[2]?.textContent?.trim() ?? 'Theory'
+    const rows = Array.from(attendanceTable.querySelectorAll('tr'))
+    const headerCells = Array.from(rows[0]?.querySelectorAll('th, td') ?? [])
+      .map((cell) => normalizeHeaderText(cell.textContent ?? ''))
+    const firstDataRow = rows.slice(1).find((row) => row.querySelectorAll('td').length > 0)
+    const fallbackLastIdx = Math.max(0, (firstDataRow?.querySelectorAll('td').length ?? 9) - 1)
+
+    const codeIdx = findHeaderIndex(headerCells, [/course\s*code/, /^code$/]) >= 0 ? findHeaderIndex(headerCells, [/course\s*code/, /^code$/]) : 0
+    const titleIdx = findHeaderIndex(headerCells, [/course\s*title/, /subject/, /course\s*name/]) >= 0 ? findHeaderIndex(headerCells, [/course\s*title/, /subject/, /course\s*name/]) : 1
+    const typeIdx = findHeaderIndex(headerCells, [/category/, /course\s*type/, /^type$/, /component/]) >= 0 ? findHeaderIndex(headerCells, [/category/, /course\s*type/, /^type$/, /component/]) : 2
+    const facultyIdx = findHeaderIndex(headerCells, [/faculty/, /staff/, /teacher/]) >= 0 ? findHeaderIndex(headerCells, [/faculty/, /staff/, /teacher/]) : 3
+    const slotIdx = findHeaderIndex(headerCells, [/slot/, /period/, /timing/, /hour/]) >= 0 ? findHeaderIndex(headerCells, [/slot/, /period/, /timing/, /hour/]) : 4
+    const roomIdx = findHeaderIndex(headerCells, [/room/, /venue/, /classroom/]) >= 0 ? findHeaderIndex(headerCells, [/room/, /venue/, /classroom/]) : 5
+    const conductedIdx = findHeaderIndex(headerCells, [/hours?\s*conducted/, /classes?\s*conducted/, /conducted/]) >= 0 ? findHeaderIndex(headerCells, [/hours?\s*conducted/, /classes?\s*conducted/, /conducted/]) : 6
+    const absentIdx = findHeaderIndex(headerCells, [/hours?\s*absent/, /classes?\s*absent/, /absent/]) >= 0 ? findHeaderIndex(headerCells, [/hours?\s*absent/, /classes?\s*absent/, /absent/]) : 7
+    const pctIdx = findHeaderIndex(headerCells, [/attn/, /attendance/, /percent/, /%/]) >= 0 ? findHeaderIndex(headerCells, [/attn/, /attendance/, /percent/, /%/]) : Math.min(8, fallbackLastIdx)
+
+    const rowsToParse = rows.slice(1)
+    rowsToParse.forEach(row => {
+      const cells = Array.from(row.querySelectorAll('td'))
+      if (cells.length === 0) return
+
+      const valueAt = (idx: number): string => (
+        idx >= 0 && idx < cells.length
+          ? (cells[idx]?.textContent?.replace(/\s+/g, ' ').trim() ?? '')
+          : ''
+      )
+
+      const code = parseCourseCode(cells[codeIdx] ?? null, valueAt(codeIdx))
+      const title = valueAt(titleIdx)
+      const courseType = valueAt(typeIdx) || 'Theory'
       const normalizedCourseType = courseType.toLowerCase()
-      const faculty = cells[3]?.textContent?.trim() ?? ''
-      const slot = cells[4]?.textContent?.trim() ?? ''
-      const room = cells[5]?.textContent?.trim() ?? ''
-      const conducted = parseInt(cells[6]?.textContent?.trim() ?? '0', 10)
-      const absent = parseInt(cells[7]?.textContent?.trim() ?? '0', 10)
-      const pct = parseFloat(cells[8]?.textContent?.trim() ?? '0')
+      const faculty = valueAt(facultyIdx)
+      const slot = valueAt(slotIdx)
+      const room = valueAt(roomIdx)
+      const conducted = parseInt(valueAt(conductedIdx), 10) || 0
+      const absent = parseInt(valueAt(absentIdx), 10) || 0
+      const pctRaw = valueAt(pctIdx).match(/-?\d+(?:\.\d+)?/)?.[0] ?? '0'
+      const pct = parseFloat(pctRaw) || 0
+
+      const slotTokens = (slot
+        .toUpperCase()
+        .replace(/[\u2013\u2014]/g, '-')
+        .replace(/\s+/g, '')
+        .match(/(?:P\d+|L\d+|[A-G])/g) ?? [])
+      const inferredPractical = normalizedCourseType.includes('practical') || normalizedCourseType.includes('lab') || slotTokens.some((token) => /^P\d+$/.test(token) || /^L\d+$/.test(token))
+
       if (code && code.length > 3) {
         attendance.push({
           code,
           title,
-          type: (normalizedCourseType.includes('practical') || normalizedCourseType.includes('lab')) ? 'Practical' : 'Theory',
+          type: inferredPractical ? 'Practical' : 'Theory',
           faculty,
           slot,
           room,
@@ -765,10 +816,10 @@ export function getTodayClasses(
 
   const toCourseSlotTokens = (slotValue: string): string[] => (
     slotValue
+      .toUpperCase()
       .replace(/[\u2013\u2014]/g, '-')
-      .split(/[^A-Za-z0-9]+/g)
-      .map((token) => token.trim().toUpperCase())
-      .filter(Boolean)
+      .replace(/\s+/g, '')
+      .match(/(?:P\d+|L\d+|[A-G])/g) ?? []
   )
 
   return slots.map((slotCode, idx) => {
