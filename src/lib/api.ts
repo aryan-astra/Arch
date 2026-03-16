@@ -214,6 +214,31 @@ export function getSessionToken(): string | null {
   return t
 }
 
+type AuthFailurePayload = {
+  error?: string
+  reason?: string
+  valid?: boolean
+}
+
+async function readAuthFailure(resp: Response, fallbackMessage = 'Session expired — please log in again'): Promise<{ message: string; reason: string }> {
+  let payload: AuthFailurePayload = {}
+  try {
+    payload = await resp.clone().json() as AuthFailurePayload
+  } catch {
+    payload = {}
+  }
+  return {
+    message: payload.error || fallbackMessage,
+    reason: typeof payload.reason === 'string' && payload.reason.trim() ? payload.reason.trim() : 'session_missing',
+  }
+}
+
+async function throwIfUnauthorized(resp: Response, fallbackMessage?: string): Promise<void> {
+  if (resp.status !== 401) return
+  const failure = await readAuthFailure(resp, fallbackMessage)
+  throw new Error(`${failure.message} [${failure.reason}]`)
+}
+
 export async function loginUser(
   email: string,
   password: string,
@@ -260,7 +285,7 @@ export async function fetchAttendance(): Promise<LiveAttendanceResult> {
       'X-Session-Token': token,
     },
   })
-  if (resp.status === 401) throw new Error('Session expired — please log in again')
+  await throwIfUnauthorized(resp)
   if (!resp.ok) throw new Error(`Server error: HTTP ${resp.status}`)
   const html = await resp.text()
   return parseAttendancePage(html)
@@ -306,7 +331,7 @@ export async function fetchCurrentDayOrder(): Promise<number | null> {
   const resp = await fetch('/proxy/page/WELCOME', {
     headers: { 'Accept': 'text/html,application/xhtml+xml', 'X-Session-Token': token },
   })
-  if (resp.status === 401) throw new Error('Session expired — please log in again')
+  await throwIfUnauthorized(resp)
   if (!resp.ok) throw new Error(`Server error: HTTP ${resp.status}`)
   return parseDayOrderFromWelcome(await resp.text())
 }
@@ -327,7 +352,7 @@ export async function fetchProfilePatch(): Promise<Partial<StudentInfo>> {
   const resp = await fetch('/proxy/form/Student_Address_Details', {
     headers: { 'Accept': 'application/json, text/plain, */*', 'X-Session-Token': token },
   })
-  if (resp.status === 401) throw new Error('Session expired — please log in again')
+  await throwIfUnauthorized(resp)
   if (!resp.ok) throw new Error(`Server error: HTTP ${resp.status}`)
 
   const text = await resp.text()
@@ -482,6 +507,81 @@ function parseTimetableCreditsPage(html: string): Record<string, number> {
 export interface TimetableProfileCredits {
   profilePatch: Partial<StudentInfo>
   creditsByCode: Record<string, number>
+  timetableByDay: Record<number, string[]>
+}
+
+const SLOT_TOKEN_PATTERN = /^(?:[A-G]|P\d+|L\d+)$/i
+
+function normalizeSlotToken(raw: string): string {
+  return raw.replace(/\u00a0/g, ' ').replace(/\s+/g, '').toUpperCase()
+}
+
+function parseTimetableByDayFromHtml(html: string): Record<number, string[]> {
+  const innerHtml = extractInnerHtml(html)
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(innerHtml, 'text/html')
+  const byDay: Record<number, string[]> = {}
+
+  for (const row of Array.from(doc.querySelectorAll('tr'))) {
+    const cells = Array.from(row.querySelectorAll('td,th'))
+      .map((cell) => cell.textContent?.replace(/\s+/g, ' ').trim() ?? '')
+      .filter(Boolean)
+    if (cells.length < 6) continue
+
+    const rowText = cells.join(' ')
+    const dayMatch = rowText.match(/day(?:\s*order)?\s*([1-5])/i)
+    const numericLead = /^\d+$/.test(cells[0] ?? '') ? parseInt(cells[0] ?? '', 10) : NaN
+    const day = dayMatch
+      ? parseInt(dayMatch[1] ?? '', 10)
+      : numericLead
+    if (!Number.isFinite(day) || day < 1 || day > 5) continue
+
+    const slots = cells
+      .flatMap((value) => value.split(/[^A-Za-z0-9]+/g))
+      .map(normalizeSlotToken)
+      .filter((value) => SLOT_TOKEN_PATTERN.test(value))
+
+    if (slots.length >= 8) {
+      byDay[day] = slots.slice(0, 12)
+    }
+  }
+
+  return byDay
+}
+
+async function fetchUnifiedTimetableByBatch(batch: number, token: string): Promise<Record<number, string[]>> {
+  const candidates = batch === 1
+    ? [
+      'Unified_Time_Table_2025_Batch_1',
+      'Unified_Time_Table_2025_batch_1',
+      'Unified_Time_Table_2024_Batch_1',
+      'Unified_Time_Table_2024_batch_1',
+      'Unified_Time_Table_Batch_1',
+      'Unified_Time_Table_batch_1',
+    ]
+    : batch === 2
+      ? [
+        'Unified_Time_Table_2025_Batch_2',
+        'Unified_Time_Table_2025_batch_2',
+        'Unified_Time_Table_2024_Batch_2',
+        'Unified_Time_Table_2024_batch_2',
+        'Unified_Time_Table_Batch_2',
+        'Unified_Time_Table_batch_2',
+      ]
+      : []
+
+  for (const page of candidates) {
+    const resp = await fetch(`/proxy/page/${page}`, {
+      headers: { 'Accept': 'text/html,application/xhtml+xml', 'X-Session-Token': token },
+    })
+    await throwIfUnauthorized(resp)
+    if (!resp.ok) continue
+    const html = await resp.text()
+    const parsed = parseTimetableByDayFromHtml(html)
+    if (Object.keys(parsed).length >= 3) return parsed
+  }
+
+  return {}
 }
 
 export async function fetchTimetableProfileAndCredits(): Promise<TimetableProfileCredits> {
@@ -490,12 +590,26 @@ export async function fetchTimetableProfileAndCredits(): Promise<TimetableProfil
   const resp = await fetch('/proxy/page/My_Time_Table_2023_24', {
     headers: { 'Accept': 'text/html,application/xhtml+xml', 'X-Session-Token': token },
   })
-  if (resp.status === 401) throw new Error('Session expired — please log in again')
+  await throwIfUnauthorized(resp)
   if (!resp.ok) throw new Error(`Server error: HTTP ${resp.status}`)
   const html = await resp.text()
+  const profilePatch = parseTimetableProfilePage(html)
+  const creditsByCode = parseTimetableCreditsPage(html)
+  let timetableByDay = parseTimetableByDayFromHtml(html)
+
+  if (Object.keys(timetableByDay).length < 3 && typeof profilePatch.batch === 'number') {
+    const unified = await fetchUnifiedTimetableByBatch(profilePatch.batch, token)
+    if (Object.keys(unified).length >= 3) timetableByDay = unified
+  }
+
+  if (Object.keys(timetableByDay).length < 3) {
+    timetableByDay = profilePatch.batch === 1 ? {} : { ...BATCH2_TIMETABLE }
+  }
+
   return {
-    profilePatch: parseTimetableProfilePage(html),
-    creditsByCode: parseTimetableCreditsPage(html),
+    profilePatch,
+    creditsByCode,
+    timetableByDay,
   }
 }
 
@@ -588,7 +702,7 @@ async function fetchPlannerPage(linkName: string): Promise<string> {
   const resp = await fetch(`/proxy/page/${linkName}`, {
     headers: { 'Accept': 'text/html,application/xhtml+xml', 'X-Session-Token': token },
   })
-  if (resp.status === 401) throw new Error('Session expired — please log in again')
+  await throwIfUnauthorized(resp)
   if (!resp.ok) throw new Error(`Server error: HTTP ${resp.status}`)
   return await resp.text()
 }
@@ -624,7 +738,11 @@ export async function fetchAcademicCalendarEvents(): Promise<AcademicCalendarEve
 export type { AttendanceCourse, InternalMark, StudentInfo }
 
 // Get today's classes based on day order — returns empty if no valid day order
-export function getTodayClasses(dayOrder: number | null, liveAttendance?: AttendanceCourse[]): Array<{
+export function getTodayClasses(
+  dayOrder: number | null,
+  liveAttendance?: AttendanceCourse[],
+  timetableByDay: Record<number, string[]> = BATCH2_TIMETABLE
+): Array<{
   period: number
   timeSlot: string
   slot: string
@@ -633,7 +751,7 @@ export function getTodayClasses(dayOrder: number | null, liveAttendance?: Attend
   if (typeof dayOrder !== 'number' || !Number.isInteger(dayOrder) || dayOrder < 1 || dayOrder > 5) {
     return []
   }
-  const slots = BATCH2_TIMETABLE[dayOrder] ?? []
+  const slots = timetableByDay[dayOrder] ?? []
   const courseList = (liveAttendance && liveAttendance.length > 0) ? liveAttendance : ATTENDANCE
 
   return slots.map((slotCode, idx) => {
@@ -661,10 +779,13 @@ export function getTodayClasses(dayOrder: number | null, liveAttendance?: Attend
 }
 
 // Get schedule for all 5 day orders
-export function getFullSchedule(liveAttendance?: AttendanceCourse[]): Record<number, ReturnType<typeof getTodayClasses>> {
+export function getFullSchedule(
+  liveAttendance?: AttendanceCourse[],
+  timetableByDay: Record<number, string[]> = BATCH2_TIMETABLE
+): Record<number, ReturnType<typeof getTodayClasses>> {
   const result: Record<number, ReturnType<typeof getTodayClasses>> = {}
   for (let d = 1; d <= 5; d++) {
-    result[d] = getTodayClasses(d, liveAttendance).filter(p => p.course !== null)
+    result[d] = getTodayClasses(d, liveAttendance, timetableByDay).filter(p => p.course !== null)
   }
   return result
 }
@@ -728,7 +849,7 @@ export async function fetchCirculars(): Promise<Circular[]> {
   const resp = await fetch('/proxy/page/Circular_RA24', {
     headers: { 'Accept': 'text/html', 'X-Session-Token': token },
   })
-  if (resp.status === 401) throw new Error('Session expired — please log in again')
+  await throwIfUnauthorized(resp)
   if (!resp.ok) throw new Error(`Server error: HTTP ${resp.status}`)
   return parseCircularsPage(await resp.text())
 }
@@ -748,16 +869,19 @@ export async function fetchNotificationCount(): Promise<number> {
   } catch { return 0 }
 }
 
-export async function validateSession(): Promise<{ valid: boolean; email?: string }> {
+export async function validateSession(): Promise<{ valid: boolean; email?: string; reason?: string }> {
   const token = getSessionToken()
   if (!token) return { valid: false }
   try {
     const resp = await fetch('/auth/validate', {
       headers: { 'X-Session-Token': token },
     })
-    if (resp.status === 401) return { valid: false }
+    if (resp.status === 401) {
+      const failure = await readAuthFailure(resp, 'Session expired — please log in again')
+      return { valid: false, reason: failure.reason }
+    }
     if (!resp.ok) return { valid: true } // server error — assume valid, don't force logout
-    return await resp.json() as { valid: boolean; email?: string }
+    return await resp.json() as { valid: boolean; email?: string; reason?: string }
   } catch {
     return { valid: true } // network error (offline) — keep session
   }

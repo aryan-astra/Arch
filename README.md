@@ -59,6 +59,47 @@ Useful scripts:
 - Backend: Express + Axios cookie-jar auth proxy
 - PWA: `vite-plugin-pwa`
 
+## Local-first + canary workflow
+
+- Work locally on `feature/*` branches with `npm run dev`.
+- Merge tested features into `canary` first (staging/integration).
+- Promote `canary` to `main` only after verification.
+- Keep Netlify production on `main`; enable branch deploys for `canary`.
+
+## Render backend env vars (required/recommended)
+
+- `REDIS_URL` (recommended): enables persistent server sessions and reduces random logout after restarts.
+- `SRM_TLS_INSECURE` (optional, default unset): set to `1` only if SRM TLS chain fails in your environment.
+- `ADMIN_USER` (optional, default `as6977`): admin account allowed for metrics endpoint.
+- `ADMIN_METRICS_TOKEN` (recommended): required for `/auth/admin/metrics` access.
+
+## Admin active-user metrics
+
+Use:
+
+```bash
+curl -H "x-admin-user: as6977" -H "x-admin-token: <ADMIN_METRICS_TOKEN>" https://<render-service>.onrender.com/auth/admin/metrics
+```
+
+Returns active session count, unique active users, per-user session stats, and recent auth/logout events.
+
+## Storage hygiene and garbage cleanup
+
+- Per-user tab cache (`arch.tabcache.v1.*`) now has:
+  - schema versioning
+  - max-age expiry (21 days)
+  - automatic cleanup of stale/invalid entries
+- On login, cache from other users is removed.
+- On logout, current user cache + attendance snapshot are removed.
+
+This prevents uncontrolled localStorage growth while keeping fast startup for the active user.
+
+## Uptime strategy
+
+- Render free web services can sleep when idle.
+- For stable always-on sessions, use a paid always-on Render instance + Redis.
+- If free tier is kept, occasional re-auth after idle/restart is expected.
+
 ## Speed and performance engineering
 
 - Adaptive polling strategy:

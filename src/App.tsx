@@ -5,7 +5,7 @@ import {
   classesSafeToMiss, classesNeededToReach,
 } from "./data/real-data"
 import type { AttendanceCourse, InternalMark, StudentInfo } from "./data/real-data"
-import { getTodayClasses, fetchAttendance, fetchCurrentDayOrder, fetchProfilePatch, fetchTimetableProfileAndCredits, fetchAcademicCalendarEvents, validateSession, loginUser, logoutUser, getSessionToken } from "./lib/api"
+import { BATCH2_TIMETABLE, getTodayClasses, fetchAttendance, fetchCurrentDayOrder, fetchProfilePatch, fetchTimetableProfileAndCredits, fetchAcademicCalendarEvents, validateSession, loginUser, logoutUser, getSessionToken } from "./lib/api"
 import type { AcademicCalendarEvent } from "./lib/api"
 import * as sessionStorageLib from "./lib/storage"
 import { ExpandableNav } from "./components/expandable-tabs"
@@ -230,8 +230,23 @@ type AttendanceUpdateNotice = {
   title: string
   status: AttendanceUpdateKind
 }
+type TimetableByDay = Record<number, string[]>
+type TabCachePayload = {
+  attendance: AttendanceCourse[]
+  marks: InternalMark[]
+  calendarEvents: AcademicCalendarEvent[]
+  timetableByDay: TimetableByDay
+  studentBatch: number | null
+  dayOrder: number | null
+  lastUpdatedIso: string | null
+  savedAt: number
+  cacheVersion: number
+}
 
 const ATTENDANCE_SNAPSHOT_PREFIX = 'arch.attendance.snapshot.'
+const TAB_CACHE_PREFIX = 'arch.tabcache.v1.'
+const TAB_CACHE_VERSION = 2
+const TAB_CACHE_MAX_AGE_MS = 21 * 24 * 60 * 60 * 1000
 const DAY_ORDER_REFRESH_MS = 10 * 60 * 1000
 const ATTENDANCE_POLL_INTERVALS: Record<AttendancePollingMode, number> = {
   'active-class': 20 * 1000,
@@ -243,6 +258,122 @@ const ATTENDANCE_POLL_INTERVALS: Record<AttendancePollingMode, number> = {
 
 function getAttendanceSnapshotStorageKey(email: string): string {
   return `${ATTENDANCE_SNAPSHOT_PREFIX}${encodeURIComponent(email.trim().toLowerCase())}`
+}
+
+function getTabCacheStorageKey(email: string): string {
+  return `${TAB_CACHE_PREFIX}${encodeURIComponent(email.trim().toLowerCase())}`
+}
+
+function decodeUserKey(raw: string, encoded: boolean): string {
+  const source = encoded
+    ? (() => {
+      try { return decodeURIComponent(raw) } catch { return raw }
+    })()
+    : raw
+  return source.trim().toLowerCase()
+}
+
+function cleanupStaleLocalEntries(activeEmail: string | null): void {
+  const normalizedActive = activeEmail?.trim().toLowerCase() || ''
+  const keys = Object.keys(localStorage)
+  const now = Date.now()
+
+  for (const key of keys) {
+    if (key.startsWith('academia.student.')) {
+      const email = decodeUserKey(key.slice('academia.student.'.length), false)
+      if (!email || (normalizedActive && email !== normalizedActive)) {
+        localStorage.removeItem(key)
+      }
+      continue
+    }
+
+    if (key.startsWith(ATTENDANCE_SNAPSHOT_PREFIX)) {
+      const email = decodeUserKey(key.slice(ATTENDANCE_SNAPSHOT_PREFIX.length), true)
+      if (!email || (normalizedActive && email !== normalizedActive)) {
+        localStorage.removeItem(key)
+      }
+      continue
+    }
+
+    if (key.startsWith(TAB_CACHE_PREFIX)) {
+      const email = decodeUserKey(key.slice(TAB_CACHE_PREFIX.length), true)
+      if (!email || (normalizedActive && email !== normalizedActive)) {
+        localStorage.removeItem(key)
+        continue
+      }
+      try {
+        const payload = JSON.parse(localStorage.getItem(key) || '{}') as Partial<TabCachePayload>
+        const cacheVersion = typeof payload.cacheVersion === 'number' ? payload.cacheVersion : 0
+        const savedAt = typeof payload.savedAt === 'number' ? payload.savedAt : 0
+        if (cacheVersion < TAB_CACHE_VERSION || savedAt <= 0 || (now - savedAt) > TAB_CACHE_MAX_AGE_MS) {
+          localStorage.removeItem(key)
+        }
+      } catch {
+        localStorage.removeItem(key)
+      }
+    }
+  }
+}
+
+function cloneDefaultTimetableByDay(): TimetableByDay {
+  return {
+    1: [...(BATCH2_TIMETABLE[1] ?? [])],
+    2: [...(BATCH2_TIMETABLE[2] ?? [])],
+    3: [...(BATCH2_TIMETABLE[3] ?? [])],
+    4: [...(BATCH2_TIMETABLE[4] ?? [])],
+    5: [...(BATCH2_TIMETABLE[5] ?? [])],
+  }
+}
+
+function normalizeTimetableByDay(raw: unknown, fallback: TimetableByDay = cloneDefaultTimetableByDay()): TimetableByDay {
+  if (!raw || typeof raw !== 'object') return fallback
+  const parsed: TimetableByDay = {}
+  for (let day = 1; day <= 5; day += 1) {
+    const value = (raw as Record<string, unknown>)[String(day)] ?? (raw as Record<number, unknown>)[day]
+    if (!Array.isArray(value)) continue
+    const slots = value
+      .map((slot) => (typeof slot === 'string' ? slot.trim().toUpperCase() : ''))
+      .filter((slot) => slot.length > 0)
+      .slice(0, 12)
+    if (slots.length > 0) parsed[day] = slots
+  }
+  return Object.keys(parsed).length > 0 ? parsed : fallback
+}
+
+function readTabCache(email: string): TabCachePayload | null {
+  if (!email) return null
+  const raw = localStorage.getItem(getTabCacheStorageKey(email))
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as Partial<TabCachePayload>
+    const cacheVersion = typeof parsed.cacheVersion === 'number' ? parsed.cacheVersion : 0
+    const savedAt = typeof parsed.savedAt === 'number' ? parsed.savedAt : 0
+    if (cacheVersion < TAB_CACHE_VERSION || savedAt <= 0 || (Date.now() - savedAt) > TAB_CACHE_MAX_AGE_MS) {
+      localStorage.removeItem(getTabCacheStorageKey(email))
+      return null
+    }
+    const studentBatch = typeof parsed.studentBatch === 'number' && parsed.studentBatch >= 1 ? parsed.studentBatch : null
+    const fallbackTimetable = studentBatch === 1 ? {} : cloneDefaultTimetableByDay()
+    return {
+      attendance: Array.isArray(parsed.attendance) ? parsed.attendance as AttendanceCourse[] : [],
+      marks: Array.isArray(parsed.marks) ? parsed.marks as InternalMark[] : [],
+      calendarEvents: Array.isArray(parsed.calendarEvents) ? parsed.calendarEvents as AcademicCalendarEvent[] : [],
+      timetableByDay: normalizeTimetableByDay(parsed.timetableByDay, fallbackTimetable),
+      studentBatch,
+      dayOrder: typeof parsed.dayOrder === 'number' && parsed.dayOrder >= 1 && parsed.dayOrder <= 5 ? parsed.dayOrder : null,
+      lastUpdatedIso: typeof parsed.lastUpdatedIso === 'string' ? parsed.lastUpdatedIso : null,
+      savedAt,
+      cacheVersion: TAB_CACHE_VERSION,
+    }
+  } catch {
+    localStorage.removeItem(getTabCacheStorageKey(email))
+    return null
+  }
+}
+
+function writeTabCache(email: string, payload: TabCachePayload): void {
+  if (!email) return
+  localStorage.setItem(getTabCacheStorageKey(email), JSON.stringify(payload))
 }
 
 function isStandalonePwaDisplayMode(): boolean {
@@ -292,11 +423,16 @@ function detectAttendanceUpdates(previous: AttendanceSnapshot | null, next: Atte
   return updates
 }
 
-function resolveAttendancePollingMode(dayOrder: number | null, attendance: AttendanceCourse[], now = new Date()): AttendancePollingMode {
+function resolveAttendancePollingMode(
+  dayOrder: number | null,
+  attendance: AttendanceCourse[],
+  timetableByDay: TimetableByDay,
+  now = new Date()
+): AttendancePollingMode {
   const weekday = now.getDay()
   if (weekday === 0 || weekday === 6) return 'weekend'
 
-  const todayClasses = getTodayClasses(dayOrder, attendance)
+  const todayClasses = getTodayClasses(dayOrder, attendance, timetableByDay)
   const windows = todayClasses
     .map((slot) => ({
       start: parseSlotStart(slot.timeSlot),
@@ -319,8 +455,12 @@ function resolveAttendancePollingMode(dayOrder: number | null, attendance: Atten
   return 'between-classes'
 }
 
-function getAdaptiveAttendancePollIntervalMs(dayOrder: number | null, attendance: AttendanceCourse[]): number {
-  const mode = resolveAttendancePollingMode(dayOrder, attendance)
+function getAdaptiveAttendancePollIntervalMs(
+  dayOrder: number | null,
+  attendance: AttendanceCourse[],
+  timetableByDay: TimetableByDay
+): number {
+  const mode = resolveAttendancePollingMode(dayOrder, attendance, timetableByDay)
   const baseInterval = ATTENDANCE_POLL_INTERVALS[mode]
   if (document.hidden) return Math.max(baseInterval, 3 * 60 * 1000)
   return baseInterval
@@ -1219,10 +1359,11 @@ function LoginScreen({ onSuccess }: { onSuccess: (email: string) => void }) {
 }
 
 // ─── Home ──────────────────────────────────────────────────────────────────────
-function HomeScreen({ student, fallbackName, attendance, refreshing, onRefresh, dayOrder, onDayOrderChange, lastUpdated, dataLoading }: {
+function HomeScreen({ student, fallbackName, attendance, timetableByDay, refreshing, onRefresh, dayOrder, onDayOrderChange, lastUpdated, dataLoading }: {
   student: StudentInfo
   fallbackName: string
   attendance: AttendanceCourse[]
+  timetableByDay: TimetableByDay
   refreshing: boolean
   onRefresh: () => void
   dayOrder: number | null
@@ -1233,7 +1374,7 @@ function HomeScreen({ student, fallbackName, attendance, refreshing, onRefresh, 
   const overall = overallPct(attendance)
   const animatedOverall = useCountUp(overall)
   const below = attendance.filter(c => c.percent <= 75)
-  const todayClasses = groupClasses(getTodayClasses(dayOrder, attendance))
+  const todayClasses = groupClasses(getTodayClasses(dayOrder, attendance, timetableByDay))
   const todayClassesPreview = todayClasses.slice(0, 4)
   const now = useClock()
   const nowTs = useNowTimestamp()
@@ -1871,10 +2012,14 @@ function CourseRow({ course, marks }: { course: AttendanceCourse; marks: Interna
 }
 
 // ─── Schedule ──────────────────────────────────────────────────────────────────
-function ScheduleScreen({ initialDay, attendance }: { initialDay: number | null; attendance: AttendanceCourse[] }) {
+function ScheduleScreen({ initialDay, attendance, timetableByDay }: {
+  initialDay: number | null
+  attendance: AttendanceCourse[]
+  timetableByDay: TimetableByDay
+}) {
   const [manualSelectedDay, setManualSelectedDay] = useState<number | null>(null)
   const selectedDay = manualSelectedDay ?? initialDay ?? 1
-  const classes = groupClasses(getTodayClasses(selectedDay, attendance))
+  const classes = groupClasses(getTodayClasses(selectedDay, attendance, timetableByDay))
   const now = useClock()
   const [expandedKey, setExpandedKey] = useState<string | null>(null)
 
@@ -2094,6 +2239,16 @@ function ProfileScreen({ student, theme, onTheme, onLogout, attendanceAlertPermi
         Works in installed PWA mode and alerts when a subject is marked present or absent.
       </div>
 
+      <div className="section-header">
+        <span className="section-title">Support</span>
+      </div>
+      <div className="btn-row">
+        <a className="btn-list-item secondary" href={FEEDBACK_MAILTO}>
+          <Icons.Mail />
+          Send feedback
+        </a>
+      </div>
+
       <div className="section-header" />
       <div className="btn-row">
         <button className="btn-list-item danger" onClick={onLogout}>
@@ -2124,33 +2279,55 @@ function NotFoundScreen() {
 export default function App() {
   const [routePath] = useState(() => normalizeAppPath(window.location.pathname))
   const isNotFoundRoute = !APP_VALID_PATHS.has(routePath)
+  const bootSnapshot = useMemo(() => loadSessionSnapshot(), [])
+  const bootEmail = bootSnapshot?.email ?? ''
+  const bootCache = useMemo(() => (bootEmail ? readTabCache(bootEmail) : null), [bootEmail])
+  const bootStudentBatch = useMemo(() => {
+    if (!bootEmail) return null
+    const saved = localStorage.getItem(`academia.student.${bootEmail}`)
+    if (!saved) return null
+    try {
+      const parsed = JSON.parse(saved) as Partial<StudentInfo>
+      return typeof parsed.batch === 'number' && parsed.batch >= 1 ? parsed.batch : null
+    } catch {
+      return null
+    }
+  }, [bootEmail])
+  const bootLastUpdated = useMemo(() => {
+    if (!bootCache?.lastUpdatedIso) return null
+    const date = new Date(bootCache.lastUpdatedIso)
+    return Number.isNaN(date.getTime()) ? null : date
+  }, [bootCache])
   const [loggedIn, setLoggedIn] = useState(() => !!getSessionToken())
-  const [loggedEmail, setLoggedEmail] = useState(() => loadSessionSnapshot()?.email ?? '')
+  const [loggedEmail, setLoggedEmail] = useState(() => bootEmail)
   const [screen, setScreen] = useState<Screen>("home")
   const [student, setStudent] = useState<StudentInfo>(() => {
-    const email = loadSessionSnapshot()?.email ?? ''
-    if (!email) return EMPTY_STUDENT
-    const saved = localStorage.getItem(`academia.student.${email}`)
+    if (!bootEmail) return EMPTY_STUDENT
+    const saved = localStorage.getItem(`academia.student.${bootEmail}`)
     if (saved) {
       try { return JSON.parse(saved) as StudentInfo } catch { return EMPTY_STUDENT }
     }
     return EMPTY_STUDENT
   })
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(() => bootLastUpdated)
   const [dayOrder, setDayOrder] = useDayOrder()
-  const [attendance, setAttendance] = useState<AttendanceCourse[]>([])
+  const [attendance, setAttendance] = useState<AttendanceCourse[]>(() => bootCache?.attendance ?? [])
   const [courseCredits, setCourseCredits] = useState<Record<string, number>>({})
-  const [marks, setMarks] = useState<InternalMark[]>([])
+  const [marks, setMarks] = useState<InternalMark[]>(() => bootCache?.marks ?? [])
   const [refreshing, setRefreshing] = useState(false)
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null)
   const [showPwa, setShowPwa] = useState(false)
   const [showIosPwa, setShowIosPwa] = useState(false)
   const [theme, setTheme] = useState<Theme>(getSavedTheme)
-  const [calendarEvents, setCalendarEvents] = useState<AcademicCalendarEvent[]>([])
+  const [calendarEvents, setCalendarEvents] = useState<AcademicCalendarEvent[]>(() => bootCache?.calendarEvents ?? [])
   const [calendarLoading, setCalendarLoading] = useState(false)
   const [calendarError, setCalendarError] = useState('')
   const [isOffline, setIsOffline] = useState(!navigator.onLine)
   const [needUpdate, setNeedUpdate] = useState(false)
+  const [timetableByDay, setTimetableByDay] = useState<TimetableByDay>(() => {
+    if (bootCache?.timetableByDay) return bootCache.timetableByDay
+    return bootStudentBatch === 1 ? {} : cloneDefaultTimetableByDay()
+  })
   const [attendanceAlertPermission, setAttendanceAlertPermission] = useState<NotificationPermission | 'unsupported'>(() => {
     if (!('Notification' in window)) return 'unsupported'
     return Notification.permission
@@ -2169,6 +2346,10 @@ export default function App() {
   useEffect(() => { creditsRef.current = courseCredits }, [courseCredits])
 
   useEffect(() => {
+    cleanupStaleLocalEntries(loggedEmail || bootEmail || null)
+  }, [loggedEmail, bootEmail])
+
+  useEffect(() => {
     attendanceSnapshotRef.current = null
     if (!loggedIn || !loggedEmail) return
     const key = getAttendanceSnapshotStorageKey(loggedEmail)
@@ -2185,6 +2366,46 @@ export default function App() {
       localStorage.removeItem(key)
     }
   }, [loggedIn, loggedEmail])
+
+  useEffect(() => {
+    if (!loggedIn || !loggedEmail) return
+    writeTabCache(loggedEmail, {
+      attendance,
+      marks,
+      calendarEvents,
+      timetableByDay,
+      studentBatch: student.batch > 0 ? student.batch : null,
+      dayOrder,
+      lastUpdatedIso: lastUpdated ? lastUpdated.toISOString() : null,
+      savedAt: Date.now(),
+      cacheVersion: TAB_CACHE_VERSION,
+    })
+  }, [loggedIn, loggedEmail, attendance, marks, calendarEvents, timetableByDay, student.batch, dayOrder, lastUpdated])
+
+  useEffect(() => {
+    const root = document.documentElement
+    const viewport = window.visualViewport
+    if (!viewport) {
+      root.style.setProperty('--dynamic-safe-bottom', '0px')
+      return
+    }
+
+    const syncDynamicBottomInset = () => {
+      const inset = Math.max(0, Math.min(140, window.innerHeight - viewport.height - viewport.offsetTop))
+      root.style.setProperty('--dynamic-safe-bottom', `${Math.round(inset)}px`)
+    }
+
+    syncDynamicBottomInset()
+    viewport.addEventListener('resize', syncDynamicBottomInset)
+    viewport.addEventListener('scroll', syncDynamicBottomInset)
+    window.addEventListener('orientationchange', syncDynamicBottomInset)
+    return () => {
+      viewport.removeEventListener('resize', syncDynamicBottomInset)
+      viewport.removeEventListener('scroll', syncDynamicBottomInset)
+      window.removeEventListener('orientationchange', syncDynamicBottomInset)
+      root.style.setProperty('--dynamic-safe-bottom', '0px')
+    }
+  }, [])
 
   function handleTheme(t: Theme) {
     setTheme(t)
@@ -2313,8 +2534,11 @@ export default function App() {
   // Session validation — verify server-side session alive on app start
   useEffect(() => {
     if (!loggedIn) return
-    validateSession().then(({ valid }) => {
-      if (!valid) handleLogout()
+    validateSession().then(({ valid, reason }) => {
+      if (!valid) {
+        console.warn('[auth] Session validation failed', reason ?? 'unknown')
+        handleLogout()
+      }
       else refreshSessionSnapshot()
     }).catch(() => {}) // network error = offline, keep session
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2329,6 +2553,11 @@ export default function App() {
     ])
     if (ttResult.status === 'fulfilled') {
       setCourseCredits(ttResult.value.creditsByCode)
+      const detectedBatch = typeof ttResult.value.profilePatch.batch === 'number'
+        ? ttResult.value.profilePatch.batch
+        : studentRef.current.batch
+      const fallbackTimetable = detectedBatch === 1 ? {} : cloneDefaultTimetableByDay()
+      setTimetableByDay(normalizeTimetableByDay(ttResult.value.timetableByDay, fallbackTimetable))
       setAttendance(prev => applyCreditsToAttendance(prev, ttResult.value.creditsByCode))
     }
     const timetablePatch = ttResult.status === 'fulfilled' ? ttResult.value.profilePatch : {}
@@ -2365,10 +2594,16 @@ export default function App() {
     clearSessionSnapshot()
     const email = loggedEmailRef.current
     if (email) localStorage.removeItem(`academia.student.${email}`)
+    if (email) localStorage.removeItem(getTabCacheStorageKey(email))
+    if (email) localStorage.removeItem(getAttendanceSnapshotStorageKey(email))
     localStorage.removeItem('academia.student') // legacy key cleanup
     setStudent(EMPTY_STUDENT)
     setAttendance([])
     setMarks([])
+    setCourseCredits({})
+    setCalendarEvents([])
+    setCalendarError('')
+    setTimetableByDay(cloneDefaultTimetableByDay())
     setLastUpdated(null)
     setLoggedEmail('')
     setLoggedIn(false)
@@ -2444,7 +2679,7 @@ export default function App() {
       try {
         const synced = await syncAttendanceState({ notifyOnChange: true })
         if (disposed) return
-        const nextDelay = getAdaptiveAttendancePollIntervalMs(synced.dayOrder, synced.attendance)
+        const nextDelay = getAdaptiveAttendancePollIntervalMs(synced.dayOrder, synced.attendance, timetableByDay)
         pollRef.current = window.setTimeout(() => { void runPoll() }, nextDelay)
       } catch (err) {
         const msg = (err as Error).message ?? ''
@@ -2477,18 +2712,18 @@ export default function App() {
       document.removeEventListener('visibilitychange', wakePoll)
       window.removeEventListener('focus', wakePoll)
     }
-  }, [loggedIn, isOffline, syncAttendanceState, clearPollTimer, resetUserSessionState])
+  }, [loggedIn, isOffline, syncAttendanceState, clearPollTimer, resetUserSessionState, timetableByDay])
 
   // Academic planner calendar — fetch on demand when screen opens
   useEffect(() => {
     if (screen !== 'calendar' || !loggedIn) return
-    setCalendarLoading(true)
+    setCalendarLoading(calendarEvents.length === 0)
     setCalendarError('')
     fetchAcademicCalendarEvents()
       .then(setCalendarEvents)
       .catch(err => setCalendarError(err.message || 'Failed to load academic calendar'))
       .finally(() => setCalendarLoading(false))
-  }, [screen, loggedIn])
+  }, [screen, loggedIn, calendarEvents.length])
 
   async function handleRefresh() {
     setRefreshing(true)
@@ -2529,18 +2764,32 @@ export default function App() {
 
   if (!loggedIn) return (
     <LoginScreen onSuccess={(email) => {
-      // Remove stale data from any other previously logged-in user
-      Object.keys(localStorage)
-        .filter(k => k.startsWith('academia.student.') && k !== `academia.student.${email}`)
-        .forEach(k => localStorage.removeItem(k))
+      // Keep only this user's scoped cache entries to prevent storage bloat.
+      cleanupStaleLocalEntries(email)
       // Load THIS user's cached student for instant name display
       const saved = localStorage.getItem(`academia.student.${email}`)
-      if (saved) { try { setStudent(JSON.parse(saved) as StudentInfo) } catch { setStudent(EMPTY_STUDENT) } }
-      else { setStudent(EMPTY_STUDENT) }
-      // Reset stale data so poll fetches fresh
-      setAttendance([])
-      setMarks([])
-      setLastUpdated(null)
+      let cachedStudent = EMPTY_STUDENT
+      if (saved) {
+        try {
+          cachedStudent = JSON.parse(saved) as StudentInfo
+        } catch {
+          cachedStudent = EMPTY_STUDENT
+        }
+      }
+      setStudent(cachedStudent)
+      const cache = readTabCache(email)
+      setAttendance(cache?.attendance ?? [])
+      setMarks(cache?.marks ?? [])
+      setCalendarEvents(cache?.calendarEvents ?? [])
+      const fallbackTimetable = cachedStudent.batch === 1 ? {} : cloneDefaultTimetableByDay()
+      setTimetableByDay(cache?.timetableByDay ?? fallbackTimetable)
+      if (cache?.lastUpdatedIso) {
+        const restored = new Date(cache.lastUpdatedIso)
+        setLastUpdated(Number.isNaN(restored.getTime()) ? null : restored)
+      } else {
+        setLastUpdated(null)
+      }
+      setCalendarError('')
       dayOrderSyncedAtRef.current = 0
       attendanceSnapshotRef.current = null
       pollInFlightRef.current = false
@@ -2616,12 +2865,30 @@ export default function App() {
           </div>
         )}
         {screen === "home" && (
-          <HomeScreen student={student} fallbackName={fallbackName} attendance={attendance} refreshing={refreshing} onRefresh={handleRefresh} dayOrder={dayOrder} onDayOrderChange={setDayOrder} lastUpdated={lastUpdated} dataLoading={loggedIn && attendance.length === 0 && lastUpdated === null} />
+          <HomeScreen
+            student={student}
+            fallbackName={fallbackName}
+            attendance={attendance}
+            timetableByDay={timetableByDay}
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            dayOrder={dayOrder}
+            onDayOrderChange={setDayOrder}
+            lastUpdated={lastUpdated}
+            dataLoading={loggedIn && attendance.length === 0 && lastUpdated === null}
+          />
         )}
         {screen === "attendance" && (
           <AttendanceScreen attendance={attendance} marks={marks} />
         )}
-        {screen === "schedule" && <ScheduleScreen key={dayOrder ?? 'none'} initialDay={dayOrder} attendance={attendance} />}
+        {screen === "schedule" && (
+          <ScheduleScreen
+            key={dayOrder ?? 'none'}
+            initialDay={dayOrder}
+            attendance={attendance}
+            timetableByDay={timetableByDay}
+          />
+        )}
         {screen === "calendar" && <CalendarScreen events={calendarEvents} loading={calendarLoading} error={calendarError} onDayOrderSync={setDayOrder} />}
         {screen === "profile" && (
           <ProfileScreen

@@ -1,0 +1,342 @@
+ARCH PROJECT CONTEXT FOR OTHER AI TOOLS
+
+Purpose
+- This file is a full context handoff for external AI tools (for example ChatGPT, Claude, Gemini) so they can understand this project and write accurate documentation, product copy, technical summaries, and feature explanations.
+
+Project Identity
+- Product name: Arch
+- Positioning: Fast, compact, mobile-first remake of SRM Academia portal
+- Primary audience: SRM students using mobile devices
+- Main goals:
+  - Reduce friction vs legacy portal
+  - Keep login/session reliable for daily use
+  - Present attendance and timetable data in compact, high-signal UI
+  - Support installable PWA usage
+
+Core Architecture
+- Frontend:
+  - React 19 + TypeScript + Vite
+  - Framer Motion for motion
+  - Recharts for marks trend charts
+  - Custom CSS design system in one central stylesheet
+- Backend:
+  - Express server in O:\academis-clone\server\index.cjs
+  - Zoho IAM login orchestration using axios + cookie jar
+  - Session-token based proxy for SRM pages
+- Deployment shape:
+  - Frontend on Netlify
+  - Backend on Render
+  - Netlify rewrites forward /auth/* and /proxy/* to Render
+
+Runtime Model
+- Browser logs in via backend (/auth/login).
+- Backend stores authenticated SRM cookies in memory by session token.
+- Frontend calls backend proxy routes with X-Session-Token.
+- Frontend parses returned HTML/JSON into structured app data.
+
+Screens and UX Surfaces
+- Login screen
+- Home screen
+- Attendance screen
+- Timetable screen
+- Calendar screen
+- Profile screen
+- In-app 404 screen for unknown routes
+
+Detailed Features by Screen
+
+1) Login (O:\academis-clone\src\App.tsx, LoginScreen)
+- Two-step auth flow:
+  - Step 1: NetID/email
+  - Step 2: password
+- Email normalization:
+  - Auto-appends @srmist.edu.in if user enters only NetID
+  - Lowercases and trims input
+- Trusted device option:
+  - "Stay signed in" checkbox
+  - Controls local vs session token/session-snapshot persistence
+- Visible authentication progress:
+  - Rotating step labels:
+    - Connecting to SRM gateway
+    - Verifying NetID
+    - Checking active sessions
+    - Creating secure portal session
+    - Loading your dashboard
+- Motion/branding:
+  - Spotlight background
+  - Alpha messaging
+  - Compact social-proof live feed (stacked rotating NetID cards)
+- Feedback link:
+  - mailto:arch.unbeaten936@passinbox.com
+
+2) Home (HomeScreen)
+- Greeting and identity block:
+  - Time-based greeting
+  - Student name
+  - Day order pill
+  - Meta chips (reg no, semester/section, date)
+- Class awareness:
+  - Detects current or next class from timetable slots
+  - Shows NOW indicator and remaining time
+- Attendance at-a-glance:
+  - Animated donut
+  - Overall attendance
+  - At-risk count
+- Risk pills:
+  - Shows courses at or below threshold
+- Today schedule preview:
+  - Compact list
+  - Multi-slot grouping + expandable slot details
+- Pull to refresh:
+  - Gesture refresh support
+- Manual Day Order selector:
+  - Bottom sheet to set no-day-order or day 1..5
+
+3) Attendance (AttendanceScreen + CourseRow)
+- High-density attendance overview:
+  - Animated overall percentage
+  - Course count
+  - At-risk count
+- Two action tools in overview:
+  - Risk
+  - Trend
+- Theory/practical split:
+  - Separate sections
+- Per-course detail:
+  - Code, title, type, faculty, slot, room
+  - Credit display
+  - Conducted/present/absent chips
+  - Progress bar
+  - Guidance:
+    - Must attend X classes
+    - Can miss X classes
+    - At limit
+- Internal marks inline:
+  - Assessment labels normalized and sorted
+- Risk Planner sheet:
+  - Pick course
+  - Planned leaves input
+  - Recovery classes input
+  - Projected and recovery percentages
+  - Safe-to-miss and must-attend calculations
+- Marks Trend sheet:
+  - Per-course metrics (latest, average, best, delta)
+  - Lazy-loaded line chart
+  - 50 percent pass reference logic
+
+4) Timetable (ScheduleScreen)
+- Day tabs (1..5)
+- Current day emphasis
+- Class cards:
+  - Time range
+  - Duration
+  - Course title
+  - Faculty
+  - Slot and room chips
+- Live indicator for ongoing class
+- Multi-slot expansion support
+
+5) Calendar (CalendarScreen)
+- Academic planner event rendering (odd + even semester pages)
+- Month navigation
+- Day cells with:
+  - Date
+  - Day-order badge when available
+  - Event-type dots (holiday, exam, event, working)
+- Selected-day event list
+- Export features:
+  - Full ICS export
+  - Month ICS export
+- Clicking day-order date can sync day order state
+
+6) Profile (ProfileScreen)
+- Student identity hero
+- Academic details card
+- Faculty advisor card with mail/tel links
+- Academic advisor card with mail/tel links
+- Theme selector (10 themes)
+- Attendance alerts permission control:
+  - Request notification permission
+  - State-aware button text (enabled/denied/unsupported)
+- Sign out
+
+7) 404 behavior
+- App-level route guard:
+  - Unknown paths render custom black 404 screen in-app
+- Static fallback file:
+  - O:\academis-clone\public\404.html
+
+PWA Features
+- Plugin: vite-plugin-pwa
+- Manifest includes:
+  - standalone display
+  - portrait orientation
+  - icon set:
+    - pwa-192.png
+    - pwa-512.png
+    - pwa-maskable-512.png
+    - apple-touch-icon.png
+- Theme/background color set to black
+- Service worker:
+  - auto update mode
+  - Workbox runtime caching strategies
+- Install experiences:
+  - Android beforeinstallprompt banner
+  - iOS guidance banner
+- Startup resilience:
+  - Cache/service-worker recovery guard if shell mount fails
+
+Attendance Notifications and Adaptive Polling
+- Notification behavior:
+  - Works when permission is granted and app is in standalone PWA mode
+  - Detects attendance deltas per course (present, absent, updated)
+  - Emits individual notifications (up to 3), then summary if more
+- Polling is adaptive (not fixed):
+  - active-class: 20s
+  - between-classes: 60s
+  - off-hours: 7m
+  - idle-day: 15m
+  - weekend: 25m
+  - hidden-tab minimum floor: 3m
+- Day-order fetch is throttled to avoid over-fetching:
+  - Refresh window: 10 minutes or forced refresh
+
+Auth and Session System
+
+Frontend token/session persistence
+- Token storage key:
+  - academia.token (sessionStorage or localStorage)
+- Session snapshot keys:
+  - academia.trusted-session (localStorage)
+  - academia.browser-session (sessionStorage)
+- Snapshot TTLs:
+  - Trusted: 180 days
+  - Non-trusted browser session: 2 days
+
+Backend session storage
+- In-memory map of sessionToken -> session data
+- Session includes cookieString, email, trusted flag, createdAt, lastSeenAt, expiresAt
+- Periodic cleanup removes expired sessions
+
+Backend Endpoints (O:\academis-clone\server\index.cjs)
+- POST /auth/login
+  - Runs Zoho IAM flow and returns sessionToken
+- DELETE /auth/sessions
+  - Terminates active sessions on upstream
+- POST /auth/logout
+  - Clears local backend session token
+- GET /auth/validate
+  - Verifies token and touches TTL
+- GET /auth/health
+  - Health endpoint with active session count
+- /proxy/*
+  - Authenticated pass-through proxy to SRM academia pages
+
+Data Fetching and Parsing Layer (O:\academis-clone\src\lib\api.ts)
+- setSessionToken / getSessionToken
+- loginUser / logoutUser / validateSession
+- fetchAttendance
+  - Parses My_Attendance HTML into:
+    - student info
+    - attendance course rows
+    - internal marks rows
+- fetchCurrentDayOrder
+  - Parses WELCOME page day order
+- fetchProfilePatch
+  - Pulls Student_Address_Details form payload
+- fetchTimetableProfileAndCredits
+  - Extracts profile details and course credits
+- fetchAcademicCalendarEvents
+  - Merges odd/even semester planner events
+- fetchCirculars
+  - Circular parsing helper available
+- fetchNotificationCount
+  - Notification count helper available
+- getTodayClasses / getFullSchedule
+  - Slot-day mapping helpers for timetable/home
+
+Theming and Visual System
+- Theme keys and labels:
+  - dark (Midnight)
+  - light (Daylight)
+  - pink (Rose)
+  - catppuccin (Lilac)
+  - graphite (Graphite)
+  - cosmic-night (Nebula)
+  - northern-lights (Mint)
+  - starry-night (Cobalt)
+  - mocha-mousse (Sand)
+  - darkmatter (Ember)
+- Theme persistence via localStorage
+- Dark-tone helpers applied via root classes
+- Mobile safe-area handling:
+  - viewport-fit=cover
+  - top/bottom safe inset usage in layout
+- Bottom nav:
+  - Expandable active tab behavior
+  - Stroke-only icon fix to avoid accidental fill issues
+
+Performance and Reliability Techniques
+- Lazy loading for marks chart component
+- Adaptive polling instead of constant fixed polling
+- Background-tab polling floor
+- Day-order fetch throttling
+- PWA runtime caching via Workbox
+- Startup cache/self-heal guard
+- Session validation on app boot
+- 401/session-expiry flow clears state and signs user out safely
+
+Deployment and Hosting (current project setup)
+- GitHub repository:
+  - https://github.com/aryan-astra/Arch
+- Frontend domain:
+  - https://archsrm.netlify.app
+- Backend domain:
+  - https://arch-a6bm.onrender.com
+
+Netlify rewrite file (O:\academis-clone\public\_redirects)
+- /auth/*  -> https://arch-a6bm.onrender.com/auth/:splat 200
+- /proxy/* -> https://arch-a6bm.onrender.com/proxy/:splat 200
+- /*       -> /index.html 200
+
+Render expectations
+- Build command should be npm install
+- Start command should be node server/index.cjs
+- NODE_ENV=production is valid
+- Backend must expose /auth/health for checks
+
+Repository Structure Overview
+- O:\academis-clone\src\App.tsx
+  - Main app orchestration and all screens
+- O:\academis-clone\src\index.css
+  - Global design system and component-level styling
+- O:\academis-clone\src\lib\api.ts
+  - Fetch/parsing API layer
+- O:\academis-clone\src\lib\storage.ts
+  - Session snapshot persistence
+- O:\academis-clone\server\index.cjs
+  - Auth server and proxy backend
+- O:\academis-clone\vite.config.ts
+  - Vite + PWA + local proxy configuration
+- O:\academis-clone\public\_redirects
+  - Netlify rewrite rules
+- O:\academis-clone\README.md
+  - Primary public-facing markdown documentation
+
+Current Known Constraints
+- Backend sessions are in-memory (lost on backend restart).
+- Parsing depends on upstream SRM HTML structure; upstream changes can break extraction.
+- Full closed-app push notifications are not yet implemented (future backend web-push phase).
+- Mobile-first priority means desktop is functional but not primary UX target.
+
+How another AI can use this file
+- For product copy:
+  - Emphasize mobile-first speed, compact UI, and attendance intelligence
+- For technical docs:
+  - Describe split Netlify + Render architecture and proxy-token model
+- For release notes:
+  - Highlight adaptive polling, PWA install flow, and session reliability
+- For onboarding:
+  - Start with App.tsx, then api.ts, then server/index.cjs, then index.css
+
+End of context file.
