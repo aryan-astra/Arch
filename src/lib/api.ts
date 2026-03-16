@@ -931,6 +931,36 @@ export async function deletePushSubscription(): Promise<void> {
   if (!resp.ok) throw new Error(`Server error: HTTP ${resp.status}`)
 }
 
+export interface AdminMetricUser {
+  email: string
+  sessions: number
+  trustedSessions: number
+  firstSeenAt: string | null
+  lastSeenAt: string | null
+}
+
+export interface AdminSelfMetrics {
+  ok: boolean
+  store: string
+  activeSessionCount: number
+  activeUserCount: number
+  pushSubscriptionCount: number
+  activeUsers: AdminMetricUser[]
+  recentAuthEvents: Record<string, unknown>[]
+  serverTime: string
+}
+
+export async function fetchAdminSelfMetrics(): Promise<AdminSelfMetrics> {
+  const token = getSessionToken()
+  if (!token) throw new Error('Not authenticated')
+  const resp = await fetch('/auth/admin/metrics/self', {
+    headers: { 'Accept': 'application/json', 'X-Session-Token': token },
+  })
+  await throwIfUnauthorized(resp)
+  if (!resp.ok) throw new Error(`Server error: HTTP ${resp.status}`)
+  return await resp.json() as AdminSelfMetrics
+}
+
 export async function validateSession(): Promise<{ valid: boolean; email?: string; reason?: string }> {
   const token = getSessionToken()
   if (!token) return { valid: false }

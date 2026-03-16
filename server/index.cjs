@@ -346,6 +346,14 @@ function checkAdminAccess(req) {
   return { ok: true }
 }
 
+function isAdminSessionUser(email) {
+  const normalizedEmail = normalizeIdentity(email)
+  if (!normalizedEmail || !ADMIN_USER) return false
+  if (ADMIN_USER.includes('@')) return normalizedEmail === ADMIN_USER
+  const emailUser = normalizedEmail.split('@')[0] || ''
+  return normalizedEmail === ADMIN_USER || emailUser === ADMIN_USER
+}
+
 async function listActiveSessions() {
   if (redisClient) {
     let cursor = '0'
@@ -425,6 +433,22 @@ function summarizeActiveUsers(activeSessions) {
       firstSeenAt: row.firstSeenAt ? new Date(row.firstSeenAt).toISOString() : null,
       lastSeenAt: row.lastSeenAt ? new Date(row.lastSeenAt).toISOString() : null,
     }))
+}
+
+async function collectAdminMetricsPayload() {
+  const activeSessions = await listActiveSessions()
+  const activeUsers = summarizeActiveUsers(activeSessions)
+  const storedPushSubscriptions = await pushSubscriptionCount()
+  return {
+    ok: true,
+    store: redisClient ? 'redis' : 'memory',
+    activeSessionCount: activeSessions.length,
+    activeUserCount: activeUsers.length,
+    pushSubscriptionCount: storedPushSubscriptions,
+    activeUsers,
+    recentAuthEvents: [...authEvents].slice(-80).reverse(),
+    serverTime: new Date().toISOString(),
+  }
 }
 
 async function pushDesignStatusPayload(email) {
@@ -926,19 +950,36 @@ app.get('/auth/admin/metrics', async (req, res) => {
   }
 
   try {
-    const activeSessions = await listActiveSessions()
-    const activeUsers = summarizeActiveUsers(activeSessions)
-    const storedPushSubscriptions = await pushSubscriptionCount()
-    res.json({
-      ok: true,
-      store: redisClient ? 'redis' : 'memory',
-      activeSessionCount: activeSessions.length,
-      activeUserCount: activeUsers.length,
-      pushSubscriptionCount: storedPushSubscriptions,
-      activeUsers,
-      recentAuthEvents: [...authEvents].slice(-80).reverse(),
-      serverTime: new Date().toISOString(),
+    res.json(await collectAdminMetricsPayload())
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message })
+  }
+})
+
+// GET /auth/admin/metrics/self — admin metrics via authenticated session (as6977 only)
+app.get('/auth/admin/metrics/self', async (req, res) => {
+  const token = req.headers['x-session-token']
+  const session = await getActiveSession(token)
+  if (!session) {
+    recordAuthEvent('admin_metrics_denied', {
+      reason: 'session_missing',
+      route: '/auth/admin/metrics/self',
+      ip: clientIp(req),
     })
+    return res.status(401).json({ error: 'Not authenticated', reason: 'session_missing' })
+  }
+  await touchSession(token, session)
+  if (!isAdminSessionUser(session.email)) {
+    recordAuthEvent('admin_metrics_denied', {
+      reason: 'admin_user_not_allowed',
+      route: '/auth/admin/metrics/self',
+      email: normalizeIdentity(session.email),
+      ip: clientIp(req),
+    })
+    return res.status(403).json({ error: 'Forbidden', reason: 'admin_user_not_allowed' })
+  }
+  try {
+    res.json(await collectAdminMetricsPayload())
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message })
   }

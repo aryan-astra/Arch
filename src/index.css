@@ -88,6 +88,17 @@ img { max-width: 100%; }
   background: var(--page-bg);
   overflow: hidden;
 }
+.app.cooking-mode {
+  background: #000000;
+}
+.page-content.cooking-page-content {
+  max-width: 100%;
+  padding:
+    max(calc(env(safe-area-inset-top, 0px) + 8px), 8px)
+    0
+    calc(env(safe-area-inset-bottom, 0px) + 20px);
+  background: #000000;
+}
 
 /* ── 404 page ───────────────────────────────────────── */
 .not-found-screen {
@@ -1738,6 +1749,12 @@ img { max-width: 100%; }
 .btn-list-item.danger { color: var(--ink-0); }
 .btn-list-item svg { color: var(--ink-4); }
 .btn-list-item.danger svg { color: var(--ink-0); }
+.btn-row-meta {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink-4);
+}
 .profile-alert-note {
   margin: 6px 16px 0;
   font-size: 11px;
@@ -3105,6 +3122,157 @@ img { max-width: 100%; }
 .theme-swatch-starry-night    { background: linear-gradient(135deg,#0E172F,#4B9DFF); box-shadow: none; }
 .theme-swatch-mocha-mousse    { background: linear-gradient(135deg,#FFF3E4,#D7A173); box-shadow: none; }
 .theme-swatch-darkmatter      { background: linear-gradient(135deg,#111215,#FF8A3D); box-shadow: none; }
+
+.cooking-screen {
+  margin: 0 16px;
+  border-radius: 18px;
+  border: 0.8px solid rgba(255,255,255,0.14);
+  background: #000000;
+  color: #FFFFFF;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+}
+.cooking-scroll {
+  max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 46px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 12px;
+}
+.cooking-progressive-blur {
+  z-index: 2;
+}
+.cooking-progressive-blur-bottom {
+  border-bottom-left-radius: 18px;
+  border-bottom-right-radius: 18px;
+}
+.cooking-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: rgba(0,0,0,0.72);
+  backdrop-filter: blur(1.5px);
+  -webkit-backdrop-filter: blur(1.5px);
+  padding: 2px 0 6px;
+}
+.cooking-back-btn {
+  min-height: 34px;
+  border: 0.8px solid rgba(255,255,255,0.24);
+  border-radius: 999px;
+  background: rgba(255,255,255,0.04);
+  color: #FFFFFF;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.cooking-title {
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: #FFFFFF;
+}
+.cooking-current {
+  margin-left: auto;
+  min-height: 24px;
+  border-radius: 999px;
+  border: 0.8px solid rgba(255,255,255,0.2);
+  background: rgba(255,255,255,0.05);
+  color: #FFFFFF;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+}
+.cooking-subtitle {
+  margin-top: 9px;
+  font-size: 11px;
+  color: rgba(255,255,255,0.72);
+  font-weight: 600;
+}
+.cooking-list {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cooking-item {
+  border-radius: 0;
+  border: 0;
+  background: transparent;
+  overflow: hidden;
+}
+.cooking-summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 10px 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.cooking-summary::-webkit-details-marker {
+  display: none;
+}
+.cooking-summary::after {
+  content: '+';
+  margin-left: auto;
+  color: rgba(255,255,255,0.8);
+  font-size: 14px;
+  font-weight: 700;
+}
+.cooking-item[open] .cooking-summary::after {
+  content: '−';
+}
+.cooking-version-text {
+  font-size: 28px;
+  line-height: 1;
+  font-weight: 900;
+  letter-spacing: -0.04em;
+  color: #FFFFFF;
+  -webkit-text-stroke: 0.6px rgba(255,255,255,0.92);
+  text-shadow: 0 0 0.2px rgba(255,255,255,0.9);
+}
+.cooking-summary-text {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.72);
+}
+.cooking-body {
+  padding: 4px 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cooking-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.cooking-sign {
+  min-width: 12px;
+  line-height: 1.1;
+  font-size: 15px;
+  font-weight: 900;
+  margin-top: 1px;
+}
+.cooking-sign-plus {
+  color: #43e06d;
+}
+.cooking-sign-minus {
+  color: #ff5d5d;
+}
+.cooking-row-text {
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(255,255,255,0.92);
+  font-weight: 600;
+}
 
 .theme-gallery-grid {
   margin: 0 16px;
