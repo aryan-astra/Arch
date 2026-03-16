@@ -74,6 +74,14 @@ function parseCourseCode(cell: Element | null, fallback: string): string {
   return (codeMatch?.[0] ?? combined).trim()
 }
 
+function extractSlotTokens(slotRaw: string): string[] {
+  return (slotRaw
+    .toUpperCase()
+    .replace(/[\u2013\u2014]/g, '-')
+    .replace(/\s+/g, '')
+    .match(/(?:P\d+|L\d+|[A-G])/g) ?? [])
+}
+
 // Parses the My_Attendance page HTML (data is embedded in a JS pageSanitizer.sanitize() string)
 function parseAttendancePage(html: string): LiveAttendanceResult {
   const innerHtml = extractInnerHtml(html)
@@ -170,12 +178,8 @@ function parseAttendancePage(html: string): LiveAttendanceResult {
       const pctRaw = valueAt(pctIdx).match(/-?\d+(?:\.\d+)?/)?.[0] ?? '0'
       const pct = parseFloat(pctRaw) || 0
 
-      const slotTokens = (slot
-        .toUpperCase()
-        .replace(/[\u2013\u2014]/g, '-')
-        .replace(/\s+/g, '')
-        .match(/(?:P\d+|L\d+|[A-G])/g) ?? [])
-      const inferredPractical = normalizedCourseType.includes('practical') || normalizedCourseType.includes('lab') || slotTokens.some((token) => /^P\d+$/.test(token) || /^L\d+$/.test(token))
+      const slotTokens = extractSlotTokens(slot)
+      const inferredPractical = /\bpractical\b/i.test(normalizedCourseType) || slotTokens.some((token) => /^P\d+$/.test(token) || /^L\d+$/.test(token))
 
       if (code && code.length > 3) {
         attendance.push({
@@ -540,25 +544,64 @@ function parseTimetableProfilePage(html: string): Partial<StudentInfo> {
   return patch
 }
 
-function parseTimetableCreditsPage(html: string): Record<string, number> {
+type TimetableCourseMetadata = {
+  creditsByCode: Record<string, number>
+  slotByCourseKey: Record<string, string>
+}
+
+function parseTimetableCourseMetadata(html: string): TimetableCourseMetadata {
   const innerHtml = extractInnerHtml(html)
-  const credits: Record<string, number> = {}
-  const rowRegex = /<td>\s*\d+\s*<\/td>\s*<td>\s*([A-Za-z0-9]+)\s*<\/td>\s*<td>[\s\S]*?<\/td>\s*<td>\s*([0-9]+(?:\.[0-9]+)?)\s*<\/td>/gi
-  let match: RegExpExecArray | null = rowRegex.exec(innerHtml)
-  while (match) {
-    const code = (match[1] ?? '').trim()
-    const credit = parseFloat(match[2] ?? '')
-    if (code && Number.isFinite(credit)) {
-      credits[code] = credit
-    }
-    match = rowRegex.exec(innerHtml)
+  const creditsByCode: Record<string, number> = {}
+  const slotByCourseKey: Record<string, string> = {}
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(innerHtml, 'text/html')
+  const courseTable = doc.querySelector('table.course_tbl')
+  if (!courseTable) {
+    return { creditsByCode, slotByCourseKey }
   }
-  return credits
+
+  const cells = Array.from(courseTable.querySelectorAll('td'))
+    .map((cell) => cell.textContent?.replace(/\s+/g, ' ').trim() ?? '')
+
+  const headerStart = cells.findIndex((value) => /^s\.?\s*no$/i.test(value))
+  if (headerStart < 0) {
+    return { creditsByCode, slotByCourseKey }
+  }
+
+  const columnCount = 11
+  for (let idx = headerStart + columnCount; idx + columnCount - 1 < cells.length;) {
+    const serial = cells[idx] ?? ''
+    if (!/^\d+$/.test(serial)) {
+      idx += 1
+      continue
+    }
+
+    const code = (cells[idx + 1] ?? '').trim().toUpperCase()
+    const credit = parseFloat((cells[idx + 3] ?? '').trim())
+    const courseTypeRaw = (cells[idx + 6] ?? '').trim()
+    const slotRaw = (cells[idx + 8] ?? '').trim()
+    const slotTokens = extractSlotTokens(slotRaw)
+
+    if (code && Number.isFinite(credit)) {
+      creditsByCode[code] = credit
+    }
+    if (code && slotTokens.length > 0) {
+      const inferredType: AttendanceCourse['type'] =
+        /\bpractical\b/i.test(courseTypeRaw) || slotTokens.some((token) => /^P\d+$/.test(token) || /^L\d+$/.test(token))
+          ? 'Practical'
+          : 'Theory'
+      slotByCourseKey[`${code}|${inferredType}`] = slotTokens.join('-')
+    }
+
+    idx += columnCount
+  }
+  return { creditsByCode, slotByCourseKey }
 }
 
 export interface TimetableProfileCredits {
   profilePatch: Partial<StudentInfo>
   creditsByCode: Record<string, number>
+  slotByCourseKey: Record<string, string>
   timetableByDay: Record<number, string[]>
 }
 
@@ -646,7 +689,7 @@ export async function fetchTimetableProfileAndCredits(): Promise<TimetableProfil
   if (!resp.ok) throw new Error(`Server error: HTTP ${resp.status}`)
   const html = await resp.text()
   const profilePatch = parseTimetableProfilePage(html)
-  const creditsByCode = parseTimetableCreditsPage(html)
+  const metadata = parseTimetableCourseMetadata(html)
   let timetableByDay = parseTimetableByDayFromHtml(html)
 
   if (Object.keys(timetableByDay).length < 3 && typeof profilePatch.batch === 'number') {
@@ -668,7 +711,8 @@ export async function fetchTimetableProfileAndCredits(): Promise<TimetableProfil
 
   return {
     profilePatch,
-    creditsByCode,
+    creditsByCode: metadata.creditsByCode,
+    slotByCourseKey: metadata.slotByCourseKey,
     timetableByDay,
   }
 }
@@ -815,11 +859,7 @@ export function getTodayClasses(
   const courseList = (liveAttendance && liveAttendance.length > 0) ? liveAttendance : ATTENDANCE
 
   const toCourseSlotTokens = (slotValue: string): string[] => (
-    slotValue
-      .toUpperCase()
-      .replace(/[\u2013\u2014]/g, '-')
-      .replace(/\s+/g, '')
-      .match(/(?:P\d+|L\d+|[A-G])/g) ?? []
+    extractSlotTokens(slotValue)
   )
 
   return slots.map((slotCode, idx) => {

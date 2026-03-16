@@ -325,11 +325,13 @@ type AttendanceUpdateNotice = {
   status: AttendanceUpdateKind
 }
 type TimetableByDay = Record<number, string[]>
+type CourseSlotOverrides = Record<string, string>
 type TabCachePayload = {
   attendance: AttendanceCourse[]
   marks: InternalMark[]
   calendarEvents: AcademicCalendarEvent[]
   timetableByDay: TimetableByDay
+  courseSlotOverrides: CourseSlotOverrides
   studentBatch: number | null
   dayOrder: number | null
   lastUpdatedIso: string | null
@@ -339,7 +341,7 @@ type TabCachePayload = {
 
 const ATTENDANCE_SNAPSHOT_PREFIX = 'arch.attendance.snapshot.'
 const TAB_CACHE_PREFIX = 'arch.tabcache.v1.'
-const TAB_CACHE_VERSION = 3
+const TAB_CACHE_VERSION = 4
 const TAB_CACHE_MAX_AGE_MS = 21 * 24 * 60 * 60 * 1000
 const DAY_ORDER_REFRESH_MS = 10 * 60 * 1000
 const ATTENDANCE_POLL_INTERVALS: Record<AttendancePollingMode, number> = {
@@ -450,6 +452,19 @@ function normalizeTimetableByDay(raw: unknown, fallback: TimetableByDay = {}): T
   return Object.keys(parsed).length > 0 ? parsed : fallback
 }
 
+function normalizeCourseSlotOverrides(raw: unknown): CourseSlotOverrides {
+  if (!raw || typeof raw !== 'object') return {}
+  const normalized: CourseSlotOverrides = {}
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof key !== 'string' || !key.includes('|')) continue
+    if (typeof value !== 'string') continue
+    const slot = value.trim().toUpperCase()
+    if (!slot) continue
+    normalized[key] = slot
+  }
+  return normalized
+}
+
 function readTabCache(email: string): TabCachePayload | null {
   if (!email) return null
   const raw = localStorage.getItem(getTabCacheStorageKey(email))
@@ -469,6 +484,7 @@ function readTabCache(email: string): TabCachePayload | null {
       marks: Array.isArray(parsed.marks) ? parsed.marks as InternalMark[] : [],
       calendarEvents: Array.isArray(parsed.calendarEvents) ? parsed.calendarEvents as AcademicCalendarEvent[] : [],
       timetableByDay: normalizeTimetableByDay(parsed.timetableByDay, fallbackTimetable),
+      courseSlotOverrides: normalizeCourseSlotOverrides(parsed.courseSlotOverrides),
       studentBatch,
       dayOrder: typeof parsed.dayOrder === 'number' && parsed.dayOrder >= 1 && parsed.dayOrder <= 5 ? parsed.dayOrder : null,
       lastUpdatedIso: typeof parsed.lastUpdatedIso === 'string' ? parsed.lastUpdatedIso : null,
@@ -763,6 +779,25 @@ function applyCreditsToAttendance(
     ...course,
     credit: credits[course.code] ?? course.credit,
   }))
+}
+
+function attendanceCourseKey(course: Pick<AttendanceCourse, 'code' | 'type'>): string {
+  return `${course.code.trim().toUpperCase()}|${course.type}`
+}
+
+function applyCourseSlotOverrides(
+  attendance: AttendanceCourse[],
+  courseSlotOverrides: CourseSlotOverrides
+): AttendanceCourse[] {
+  if (Object.keys(courseSlotOverrides).length === 0) return attendance
+  return attendance.map((course) => {
+    const overrideSlot = courseSlotOverrides[attendanceCourseKey(course)]
+    if (!overrideSlot || overrideSlot === course.slot) return course
+    return {
+      ...course,
+      slot: overrideSlot,
+    }
+  })
 }
 
 function overallPct(courses: AttendanceCourse[]): number {
@@ -2548,6 +2583,7 @@ export default function App() {
     if (bootCache?.timetableByDay) return bootCache.timetableByDay
     return fallbackTimetableForBatch(bootStudentBatch)
   })
+  const [courseSlotOverrides, setCourseSlotOverrides] = useState<CourseSlotOverrides>(() => bootCache?.courseSlotOverrides ?? {})
   const [notificationCount, setNotificationCount] = useState(0)
   const [adminMetrics, setAdminMetrics] = useState<AdminSelfMetrics | null>(null)
   const [adminMetricsLoading, setAdminMetricsLoading] = useState(false)
@@ -2564,12 +2600,14 @@ export default function App() {
   const loggedEmailRef = useRef(loggedEmail)
   const studentRef = useRef(student)
   const creditsRef = useRef(courseCredits)
+  const courseSlotOverridesRef = useRef(courseSlotOverrides)
   const pushAutoEnrollAttemptedRef = useRef(false)
   const showAdminMetrics = useMemo(() => isAdminProfileUser(loggedEmail), [loggedEmail])
   useEffect(() => { dayOrderRef.current = dayOrder }, [dayOrder])
   useEffect(() => { loggedEmailRef.current = loggedEmail }, [loggedEmail])
   useEffect(() => { studentRef.current = student }, [student])
   useEffect(() => { creditsRef.current = courseCredits }, [courseCredits])
+  useEffect(() => { courseSlotOverridesRef.current = courseSlotOverrides }, [courseSlotOverrides])
 
   useEffect(() => {
     cleanupStaleLocalEntries(loggedEmail || bootEmail || null)
@@ -2594,19 +2632,25 @@ export default function App() {
   }, [loggedIn, loggedEmail])
 
   useEffect(() => {
+    if (!loggedIn || Object.keys(courseSlotOverrides).length === 0) return
+    setAttendance((prev) => applyCourseSlotOverrides(prev, courseSlotOverrides))
+  }, [loggedIn, courseSlotOverrides])
+
+  useEffect(() => {
     if (!loggedIn || !loggedEmail) return
     writeTabCache(loggedEmail, {
       attendance,
       marks,
       calendarEvents,
       timetableByDay,
+      courseSlotOverrides,
       studentBatch: student.batch > 0 ? student.batch : null,
       dayOrder,
       lastUpdatedIso: lastUpdated ? lastUpdated.toISOString() : null,
       savedAt: Date.now(),
       cacheVersion: TAB_CACHE_VERSION,
     })
-  }, [loggedIn, loggedEmail, attendance, marks, calendarEvents, timetableByDay, student.batch, dayOrder, lastUpdated])
+  }, [loggedIn, loggedEmail, attendance, marks, calendarEvents, timetableByDay, courseSlotOverrides, student.batch, dayOrder, lastUpdated])
 
   useEffect(() => {
     const root = document.documentElement
@@ -2824,12 +2868,16 @@ export default function App() {
     ])
     if (ttResult.status === 'fulfilled') {
       setCourseCredits(ttResult.value.creditsByCode)
+      setCourseSlotOverrides(normalizeCourseSlotOverrides(ttResult.value.slotByCourseKey))
       const detectedBatch = typeof ttResult.value.profilePatch.batch === 'number'
         ? ttResult.value.profilePatch.batch
         : null
       const fallbackTimetable = fallbackTimetableForBatch(detectedBatch)
       setTimetableByDay(normalizeTimetableByDay(ttResult.value.timetableByDay, fallbackTimetable))
-      setAttendance(prev => applyCreditsToAttendance(prev, ttResult.value.creditsByCode))
+      setAttendance((prev) => applyCourseSlotOverrides(
+        applyCreditsToAttendance(prev, ttResult.value.creditsByCode),
+        ttResult.value.slotByCourseKey,
+      ))
     }
     const timetablePatch = ttResult.status === 'fulfilled' ? ttResult.value.profilePatch : {}
     const addressPatch = addrResult.status === 'fulfilled' ? addrResult.value : {}
@@ -2872,6 +2920,7 @@ export default function App() {
     setAttendance([])
     setMarks([])
     setCourseCredits({})
+    setCourseSlotOverrides({})
     setCalendarEvents([])
     setCalendarError('')
     setTimetableByDay({})
@@ -3010,7 +3059,10 @@ export default function App() {
     }
 
     const nextStudent = mergeStudent(studentRef.current, res.student)
-    const nextAttendance = applyCreditsToAttendance(res.attendance, creditsRef.current)
+    const nextAttendance = applyCourseSlotOverrides(
+      applyCreditsToAttendance(res.attendance, creditsRef.current),
+      courseSlotOverridesRef.current,
+    )
     setAttendance(nextAttendance)
     setMarks(res.marks)
     setStudent(nextStudent)
@@ -3157,6 +3209,7 @@ export default function App() {
       setAttendance(cache?.attendance ?? [])
       setMarks(cache?.marks ?? [])
       setCalendarEvents(cache?.calendarEvents ?? [])
+      setCourseSlotOverrides(cache?.courseSlotOverrides ?? {})
       const fallbackTimetable = fallbackTimetableForBatch(cache?.studentBatch ?? null)
       setTimetableByDay(cache?.timetableByDay ?? fallbackTimetable)
       if (cache?.lastUpdatedIso) {
