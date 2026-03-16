@@ -5,7 +5,7 @@ import {
   classesSafeToMiss, classesNeededToReach,
 } from "./data/real-data"
 import type { AttendanceCourse, InternalMark, StudentInfo } from "./data/real-data"
-import { BATCH2_TIMETABLE, getTodayClasses, fetchAttendance, fetchCurrentDayOrder, fetchProfilePatch, fetchTimetableProfileAndCredits, fetchAcademicCalendarEvents, validateSession, loginUser, logoutUser, getSessionToken } from "./lib/api"
+import { BATCH2_TIMETABLE, getTodayClasses, fetchAttendance, fetchCurrentDayOrder, fetchProfilePatch, fetchTimetableProfileAndCredits, fetchAcademicCalendarEvents, fetchNotificationCount, validateSession, loginUser, logoutUser, getSessionToken } from "./lib/api"
 import type { AcademicCalendarEvent } from "./lib/api"
 import * as sessionStorageLib from "./lib/storage"
 import { ExpandableNav } from "./components/expandable-tabs"
@@ -2328,6 +2328,7 @@ export default function App() {
     if (bootCache?.timetableByDay) return bootCache.timetableByDay
     return bootStudentBatch === 1 ? {} : cloneDefaultTimetableByDay()
   })
+  const [notificationCount, setNotificationCount] = useState(0)
   const [attendanceAlertPermission, setAttendanceAlertPermission] = useState<NotificationPermission | 'unsupported'>(() => {
     if (!('Notification' in window)) return 'unsupported'
     return Notification.permission
@@ -2604,6 +2605,7 @@ export default function App() {
     setCalendarEvents([])
     setCalendarError('')
     setTimetableByDay(cloneDefaultTimetableByDay())
+    setNotificationCount(0)
     setLastUpdated(null)
     setLoggedEmail('')
     setLoggedIn(false)
@@ -2615,6 +2617,58 @@ export default function App() {
     pollInFlightRef.current = false
     clearPollTimer()
   }, [clearPollTimer, setDayOrder])
+
+  useEffect(() => {
+    if (!loggedIn) {
+      setNotificationCount(0)
+      return
+    }
+
+    let disposed = false
+    let timer: number | null = null
+
+    const run = async () => {
+      try {
+        const count = await fetchNotificationCount()
+        if (disposed) return
+        const safe = Number.isFinite(count) ? Math.max(0, Math.min(99, Math.floor(count))) : 0
+        setNotificationCount(safe)
+      } catch (err) {
+        const msg = (err as Error).message ?? ''
+        if (msg.includes('Session expired') || msg.includes('Not authenticated')) {
+          logoutUser().catch(() => {})
+          resetUserSessionState()
+          disposed = true
+          return
+        }
+        console.warn('[notification] Count refresh failed', err)
+      } finally {
+        if (!disposed) {
+          const delay = document.hidden ? 3 * 60 * 1000 : 90 * 1000
+          timer = window.setTimeout(() => { void run() }, delay)
+        }
+      }
+    }
+
+    const wake = () => {
+      if (disposed) return
+      if (timer !== null) {
+        window.clearTimeout(timer)
+        timer = null
+      }
+      void run()
+    }
+
+    void run()
+    document.addEventListener('visibilitychange', wake)
+    window.addEventListener('focus', wake)
+    return () => {
+      disposed = true
+      if (timer !== null) window.clearTimeout(timer)
+      document.removeEventListener('visibilitychange', wake)
+      window.removeEventListener('focus', wake)
+    }
+  }, [loggedIn, resetUserSessionState])
 
   const syncAttendanceState = useCallback(async (opts?: { forceDayOrderFetch?: boolean; notifyOnChange?: boolean }) => {
     const nowTs = Date.now()
@@ -2803,7 +2857,7 @@ export default function App() {
     { key: "attendance" as const, title: "Attendance", icon: BarChart2 },
     { key: "schedule"   as const, title: "Timetable",  icon: Clock3 },
     { key: "calendar"   as const, title: "Calendar",   icon: CalendarDays },
-    { key: "profile"    as const, title: "Profile",    icon: User },
+    { key: "profile"    as const, title: "Profile",    icon: User, badgeCount: notificationCount },
   ]
   const fallbackName = loggedEmail.split('@')[0] || 'Student'
   const installName = toTitle(firstName(student.name || loggedEmail.split('@')[0] || 'Student'))

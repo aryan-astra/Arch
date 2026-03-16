@@ -28,6 +28,7 @@ The focus is fast access, fewer taps, higher information density, and stronger s
 - Live attendance, internal marks, timetable, academic calendar, and full profile surfaces.
 - Adaptive attendance watcher that automatically changes fetch frequency by class activity and day type.
 - Attendance change notifications in installed PWA mode (present, absent, updated).
+- Profile tab notification badge with lightweight unread polling.
 - Ten-theme appearance system with dark-first visual polish and safe-area mobile handling.
 - Startup self-heal path for stale cache/service-worker edge cases.
 
@@ -111,6 +112,7 @@ This prevents uncontrolled localStorage growth while keeping fast startup for th
   - hidden tab safety floor: 3m
 - Heavy chart surface is lazy-loaded so first render stays fast.
 - Workbox runtime caching keeps documents, assets, and media responsive under unstable networks.
+- Vendor chunk splitting keeps initial route payload smaller and improves cache reuse across updates.
 - Day-order refresh is throttled and decoupled from every attendance request.
 - PWA startup recovery clears broken stale cache states to avoid blank-shell regressions.
 

@@ -5,6 +5,7 @@ export interface NavTabItem {
   key: string
   title: string
   icon: LucideIcon
+  badgeCount?: number
 }
 
 interface ExpandableNavProps {
@@ -23,6 +24,9 @@ export function ExpandableNav({ tabs, activeKey, onSelect }: ExpandableNavProps)
         {tabs.map((tab) => {
           const isSelected = activeKey === tab.key
           const Icon = tab.icon
+          const badgeCount = typeof tab.badgeCount === "number" ? Math.max(0, Math.floor(tab.badgeCount)) : 0
+          const showBadge = badgeCount > 0
+          const badgeLabel = badgeCount > 99 ? "99+" : String(badgeCount)
           return (
             <motion.button
               key={tab.key}
@@ -30,14 +34,19 @@ export function ExpandableNav({ tabs, activeKey, onSelect }: ExpandableNavProps)
               animate={{
                 gap: isSelected ? 6 : 0,
                 paddingLeft: isSelected ? 16 : 10,
-                paddingRight: isSelected ? 16 : 10,
+                paddingRight: isSelected ? (showBadge ? 22 : 16) : (showBadge ? 14 : 10),
               }}
               transition={transition}
-              className={`expandable-nav-btn${isSelected ? " active" : ""}`}
+              className={`expandable-nav-btn${isSelected ? " active" : ""}${showBadge ? " has-badge" : ""}`}
               aria-label={tab.title}
               aria-current={isSelected ? "page" : undefined}
             >
               <Icon size={20} strokeWidth={isSelected ? 2.5 : 2} />
+              {showBadge && (
+                <span className="expandable-nav-badge" aria-label={`${badgeCount} notifications`}>
+                  {badgeLabel}
+                </span>
+              )}
               <AnimatePresence initial={false}>
                 {isSelected && (
                   <motion.span
