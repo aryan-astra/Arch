@@ -33,6 +33,9 @@ const SESSION_KEY_PREFIX = 'arch:session:'
 const SESSION_REDIS_WRITE_INTERVAL_MS = 10 * 60 * 1000
 const REDIS_URL = process.env.REDIS_URL || process.env.RENDER_REDIS_URL || ''
 const SRM_TLS_INSECURE = process.env.SRM_TLS_INSECURE === '1'
+const WEB_PUSH_PUBLIC_KEY = String(process.env.WEB_PUSH_PUBLIC_KEY || '').trim()
+const WEB_PUSH_PRIVATE_KEY = String(process.env.WEB_PUSH_PRIVATE_KEY || '').trim()
+const WEB_PUSH_SUBJECT = String(process.env.WEB_PUSH_SUBJECT || '').trim()
 const ADMIN_USER = String(process.env.ADMIN_USER || 'as6977').trim().toLowerCase()
 const ADMIN_METRICS_TOKEN = process.env.ADMIN_METRICS_TOKEN || ''
 const AUTH_EVENT_LIMIT = 200
@@ -339,6 +342,32 @@ function summarizeActiveUsers(activeSessions) {
       firstSeenAt: row.firstSeenAt ? new Date(row.firstSeenAt).toISOString() : null,
       lastSeenAt: row.lastSeenAt ? new Date(row.lastSeenAt).toISOString() : null,
     }))
+}
+
+function pushDesignStatusPayload() {
+  const hasPublicKey = WEB_PUSH_PUBLIC_KEY.length > 0
+  const hasPrivateKey = WEB_PUSH_PRIVATE_KEY.length > 0
+  const hasSubject = WEB_PUSH_SUBJECT.length > 0
+  const enabled = hasPublicKey && hasPrivateKey && hasSubject
+
+  return {
+    enabled,
+    phase: enabled ? 'subscription-ready' : 'design-only',
+    requirements: [
+      hasPublicKey ? 'WEB_PUSH_PUBLIC_KEY configured' : 'Configure WEB_PUSH_PUBLIC_KEY',
+      hasPrivateKey ? 'WEB_PUSH_PRIVATE_KEY configured' : 'Configure WEB_PUSH_PRIVATE_KEY',
+      hasSubject ? 'WEB_PUSH_SUBJECT configured' : 'Configure WEB_PUSH_SUBJECT',
+      'Store PushSubscription endpoint per authenticated user',
+      'Run attendance-diff sender worker to dispatch notifications',
+    ],
+    notes: enabled
+      ? [
+        'Push keys are configured. Next step is subscription persistence and sender worker trigger.',
+      ]
+      : [
+        'Closed-app web push design is ready; backend keys and sender worker are pending.',
+      ],
+  }
 }
 
 // POST /auth/login — authenticate with Zoho, return sessionToken
@@ -650,6 +679,22 @@ app.get('/auth/validate', async (req, res) => {
   }
   await touchSession(token, session)
   res.json({ valid: true, email: session.email, trusted: Boolean(session.trusted), expiresAt: session.expiresAt })
+})
+
+// GET /auth/push/status — closed-app push rollout design status
+app.get('/auth/push/status', async (req, res) => {
+  const token = req.headers['x-session-token']
+  const session = await getActiveSession(token)
+  if (!session) {
+    recordAuthEvent('session_invalid', {
+      reason: 'session_missing',
+      route: '/auth/push/status',
+      ip: clientIp(req),
+    })
+    return res.status(401).json({ error: 'Not authenticated', reason: 'session_missing' })
+  }
+  await touchSession(token, session)
+  res.json(pushDesignStatusPayload())
 })
 
 // GET /proxy/* — proxy authenticated requests

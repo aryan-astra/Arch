@@ -5,12 +5,16 @@ import {
   classesSafeToMiss, classesNeededToReach,
 } from "./data/real-data"
 import type { AttendanceCourse, InternalMark, StudentInfo } from "./data/real-data"
-import { BATCH2_TIMETABLE, getTodayClasses, fetchAttendance, fetchCurrentDayOrder, fetchProfilePatch, fetchTimetableProfileAndCredits, fetchAcademicCalendarEvents, fetchNotificationCount, validateSession, loginUser, logoutUser, getSessionToken } from "./lib/api"
-import type { AcademicCalendarEvent } from "./lib/api"
+import { BATCH2_TIMETABLE, getTodayClasses, fetchAttendance, fetchCurrentDayOrder, fetchProfilePatch, fetchTimetableProfileAndCredits, fetchAcademicCalendarEvents, fetchNotificationCount, fetchPushDesignStatus, validateSession, loginUser, logoutUser, getSessionToken } from "./lib/api"
+import type { AcademicCalendarEvent, PushDesignStatus } from "./lib/api"
 import * as sessionStorageLib from "./lib/storage"
 import { ExpandableNav } from "./components/expandable-tabs"
 import { AcademiaLogo } from "./components/AcademiaLogo"
 import { HeroBadge } from "./components/HeroBadge"
+import finalArchLogo from "./assets/final-arch-logo.svg"
+import archLogo from "./assets/arch-logo.svg"
+import academiaPlusLogo from "./assets/academia-plus-logo.svg"
+import archLogoTransparent from "./assets/arch-logo-transparent.png"
 
 const loadSessionSnapshot = sessionStorageLib.loadSessionSnapshot
 const persistSessionSnapshot = sessionStorageLib.persistSessionSnapshot
@@ -44,6 +48,11 @@ const THEME_OPTIONS = [
   { key: "darkmatter", label: "Ember" },
 ] as const
 type Theme = (typeof THEME_OPTIONS)[number]["key"]
+type ThemeGalleryItem = {
+  key: Theme
+  label: string
+  colors: [string, string, string]
+}
 const THEME_KEYS = new Set<Theme>(THEME_OPTIONS.map((theme) => theme.key))
 const DARK_THEMES = new Set<Theme>([
   "dark",
@@ -52,6 +61,24 @@ const DARK_THEMES = new Set<Theme>([
   "starry-night",
   "darkmatter",
 ])
+const THEME_GALLERY: ThemeGalleryItem[] = [
+  { key: 'dark', label: 'Midnight', colors: ['#0B0C10', '#17181C', '#4F7EFF'] },
+  { key: 'light', label: 'Daylight', colors: ['#F9F9FB', '#D1D1D6', '#111827'] },
+  { key: 'pink', label: 'Rose', colors: ['#FFF3F9', '#FF6CC2', '#D61B84'] },
+  { key: 'catppuccin', label: 'Lilac', colors: ['#F6F0FF', '#C8B6FF', '#8D6BFF'] },
+  { key: 'graphite', label: 'Graphite', colors: ['#111215', '#3A3A3C', '#7C8798'] },
+  { key: 'cosmic-night', label: 'Nebula', colors: ['#0F1022', '#3A2A68', '#A889FF'] },
+  { key: 'northern-lights', label: 'Mint', colors: ['#F1FFF7', '#7FE3B4', '#3AB780'] },
+  { key: 'starry-night', label: 'Cobalt', colors: ['#0E172F', '#274981', '#4B9DFF'] },
+  { key: 'mocha-mousse', label: 'Sand', colors: ['#FFF3E4', '#E5B68A', '#B3794E'] },
+  { key: 'darkmatter', label: 'Ember', colors: ['#111215', '#4A2A18', '#FF8A3D'] },
+]
+const LOGO_GALLERY = [
+  { id: 'final', label: 'Final Arch Mark', src: finalArchLogo },
+  { id: 'wordmark', label: 'Arch Wordmark', src: archLogo },
+  { id: 'academia-plus', label: 'Academia Plus Mark', src: academiaPlusLogo },
+  { id: 'transparent', label: 'Transparent Badge', src: archLogoTransparent },
+] as const
 const MarksLineChart = lazy(() => import("./components/MarksLineChart"))
 const PASS_MARK_PCT = 50
 interface BeforeInstallPromptEvent extends Event {
@@ -2114,14 +2141,32 @@ function ProfileAvatar({ name }: { name: string }) {
   return <div className="profile-avatar">{firstName(name)[0] || '?'}</div>
 }
 
-function ProfileScreen({ student, theme, onTheme, onLogout, attendanceAlertPermission, onEnableAttendanceAlerts }: {
+function ProfileScreen({
+  student,
+  theme,
+  onTheme,
+  onLogout,
+  attendanceAlertPermission,
+  onEnableAttendanceAlerts,
+  pushDesignStatus,
+  pushDesignError,
+}: {
   student: StudentInfo
   theme: Theme
   onTheme: (t: Theme) => void
   onLogout: () => void
   attendanceAlertPermission: NotificationPermission | 'unsupported'
   onEnableAttendanceAlerts: () => void
+  pushDesignStatus: PushDesignStatus | null
+  pushDesignError: string
 }) {
+  const pushPhaseLabel =
+    pushDesignStatus?.phase === 'subscription-ready'
+      ? 'Config ready'
+      : pushDesignStatus?.phase === 'design-only'
+        ? 'Design complete'
+        : 'Loading'
+
   return (
     <>
       <div className="profile-hero">
@@ -2217,6 +2262,39 @@ function ProfileScreen({ student, theme, onTheme, onLogout, attendanceAlertPermi
       </div>
 
       <div className="section-header">
+        <span className="section-title">Color Gallery</span>
+      </div>
+      <div className="theme-gallery-grid">
+        {THEME_GALLERY.map((item) => (
+          <div key={item.key} className={`theme-gallery-card${theme === item.key ? ' active' : ''}`}>
+            <div className="theme-gallery-head">
+              <span>{item.label}</span>
+              {theme === item.key && <span className="theme-gallery-active">Active</span>}
+            </div>
+            <div className="theme-gallery-swatches">
+              {item.colors.map((color) => (
+                <span key={color} className="theme-gallery-swatch" style={{ background: color }} />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="section-header">
+        <span className="section-title">Logo Gallery</span>
+      </div>
+      <div className="logo-gallery-grid">
+        {LOGO_GALLERY.map((logo) => (
+          <div key={logo.id} className="logo-gallery-card">
+            <div className="logo-gallery-image-wrap">
+              <img src={logo.src} alt={logo.label} className="logo-gallery-image" />
+            </div>
+            <div className="logo-gallery-label">{logo.label}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="section-header">
         <span className="section-title">Attendance Alerts</span>
       </div>
       <div className="btn-row">
@@ -2237,6 +2315,30 @@ function ProfileScreen({ student, theme, onTheme, onLogout, attendanceAlertPermi
       </div>
       <div className="profile-alert-note">
         Works in installed PWA mode and alerts when a subject is marked present or absent.
+      </div>
+
+      <div className="section-header">
+        <span className="section-title">Closed-app Push Design</span>
+      </div>
+      <div className="push-design-card">
+        <div className="push-design-top">
+          <span className={`push-design-badge${pushDesignStatus?.enabled ? ' ready' : ''}`}>{pushPhaseLabel}</span>
+          <span className="push-design-meta">{pushDesignStatus?.enabled ? 'VAPID configured' : 'Awaiting VAPID setup'}</span>
+        </div>
+        <div className="push-design-copy">
+          {pushDesignError
+            ? `Unable to fetch push design status: ${pushDesignError}`
+            : pushDesignStatus?.notes?.[0] ?? 'Closed-app notifications need VAPID keys, subscription storage, and a sender worker trigger.'}
+        </div>
+        <div className="push-design-list">
+          {(pushDesignStatus?.requirements ?? [
+            'Configure WEB_PUSH_PUBLIC_KEY and WEB_PUSH_PRIVATE_KEY',
+            'Store subscriptions per authenticated user',
+            'Run sender worker on attendance updates',
+          ]).slice(0, 3).map((step) => (
+            <div key={step} className="push-design-item">{step}</div>
+          ))}
+        </div>
       </div>
 
       <div className="section-header">
@@ -2329,6 +2431,8 @@ export default function App() {
     return bootStudentBatch === 1 ? {} : cloneDefaultTimetableByDay()
   })
   const [notificationCount, setNotificationCount] = useState(0)
+  const [pushDesignStatus, setPushDesignStatus] = useState<PushDesignStatus | null>(null)
+  const [pushDesignError, setPushDesignError] = useState('')
   const [attendanceAlertPermission, setAttendanceAlertPermission] = useState<NotificationPermission | 'unsupported'>(() => {
     if (!('Notification' in window)) return 'unsupported'
     return Notification.permission
@@ -2606,6 +2710,8 @@ export default function App() {
     setCalendarError('')
     setTimetableByDay(cloneDefaultTimetableByDay())
     setNotificationCount(0)
+    setPushDesignStatus(null)
+    setPushDesignError('')
     setLastUpdated(null)
     setLoggedEmail('')
     setLoggedIn(false)
@@ -2669,6 +2775,28 @@ export default function App() {
       window.removeEventListener('focus', wake)
     }
   }, [loggedIn, resetUserSessionState])
+
+  useEffect(() => {
+    if (!loggedIn || screen !== 'profile') return
+    let disposed = false
+    setPushDesignError('')
+    fetchPushDesignStatus()
+      .then((status) => {
+        if (disposed) return
+        setPushDesignStatus(status)
+      })
+      .catch((err) => {
+        const msg = (err as Error).message ?? ''
+        if (msg.includes('Session expired') || msg.includes('Not authenticated')) {
+          logoutUser().catch(() => {})
+          resetUserSessionState()
+          disposed = true
+          return
+        }
+        if (!disposed) setPushDesignError(msg || 'Failed to load push design status')
+      })
+    return () => { disposed = true }
+  }, [loggedIn, screen, resetUserSessionState])
 
   const syncAttendanceState = useCallback(async (opts?: { forceDayOrderFetch?: boolean; notifyOnChange?: boolean }) => {
     const nowTs = Date.now()
@@ -2952,6 +3080,8 @@ export default function App() {
             onLogout={handleLogout}
             attendanceAlertPermission={attendanceAlertPermission}
             onEnableAttendanceAlerts={() => { void requestAttendanceAlertsPermission() }}
+            pushDesignStatus={pushDesignStatus}
+            pushDesignError={pushDesignError}
           />
         )}
       </main>

@@ -73,6 +73,9 @@ Useful scripts:
 - `SRM_TLS_INSECURE` (optional, default unset): set to `1` only if SRM TLS chain fails in your environment.
 - `ADMIN_USER` (optional, default `as6977`): admin account allowed for metrics endpoint.
 - `ADMIN_METRICS_TOKEN` (recommended): required for `/auth/admin/metrics` access.
+- `WEB_PUSH_PUBLIC_KEY` (future closed-app push): VAPID public key.
+- `WEB_PUSH_PRIVATE_KEY` (future closed-app push): VAPID private key.
+- `WEB_PUSH_SUBJECT` (future closed-app push): contact URI like `mailto:you@example.com`.
 
 ## Admin active-user metrics
 
@@ -100,6 +103,17 @@ This prevents uncontrolled localStorage growth while keeping fast startup for th
 - Render free web services can sleep when idle.
 - For stable always-on sessions, use a paid always-on Render instance + Redis.
 - If free tier is kept, occasional re-auth after idle/restart is expected.
+
+## Closed-app push design status
+
+- Design scaffolding is now available at `GET /auth/push/status` (authenticated).
+- Current phase:
+  - `design-only` when VAPID env vars are not configured
+  - `subscription-ready` when push keys + subject are configured
+- Final rollout still requires:
+  - subscription persistence endpoint
+  - sender worker triggered by attendance deltas
+  - subscription cleanup for expired endpoints
 
 ## Speed and performance engineering
 
