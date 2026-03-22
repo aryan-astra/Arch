@@ -9,6 +9,9 @@ export interface LiveAttendanceResult {
   attendance: AttendanceCourse[]
   marks: InternalMark[]
   lastUpdated: string
+  data?: AttendanceCourse[]
+  parserStatus?: 'ok' | 'structure_mismatch'
+  hint?: string
 }
 
 export interface LiveTimetableResult {
@@ -243,6 +246,18 @@ function parseAttendancePage(html: string): LiveAttendanceResult {
   }
 }
 
+function validateAttendanceResult(result: unknown): boolean {
+  if (!result || !Array.isArray(result)) return false
+  if (result.length === 0) return true
+  const first = result[0] as { courseCode?: unknown; attended?: unknown; total?: unknown }
+  return (
+    typeof first.courseCode === 'string' &&
+    first.courseCode.length > 0 &&
+    typeof first.attended === 'number' &&
+    typeof first.total === 'number'
+  )
+}
+
 // Session token stored after login
 let _sessionToken: string | null = null
 type SessionPersistence = 'session' | 'local'
@@ -344,7 +359,27 @@ export async function fetchAttendance(): Promise<LiveAttendanceResult> {
   await throwIfUnauthorized(resp)
   if (!resp.ok) throw new Error(`Server error: HTTP ${resp.status}`)
   const html = await resp.text()
-  return parseAttendancePage(html)
+  const parsed = parseAttendancePage(html)
+  const fingerprint = parsed.attendance.map((course) => ({
+    courseCode: course.code,
+    attended: Math.max(0, course.conducted - course.absent),
+    total: course.conducted,
+  }))
+  if (!validateAttendanceResult(fingerprint)) {
+    return {
+      student: parsed.student,
+      attendance: [],
+      marks: [],
+      lastUpdated: parsed.lastUpdated,
+      data: [],
+      parserStatus: 'structure_mismatch',
+      hint: 'SRM portal layout may have changed',
+    }
+  }
+  return {
+    ...parsed,
+    parserStatus: 'ok',
+  }
 }
 
 function parseDayOrderFromWelcome(html: string): number | null {
@@ -656,8 +691,8 @@ async function fetchUnifiedTimetableByBatch(batch: number, token: string): Promi
     ]
     : batch === 2
       ? [
-        'Unified_Time_Table_2025_Batch_2',
         'Unified_Time_Table_2025_batch_2',
+        'Unified_Time_Table_2025_Batch_2',
         'Unified_Time_Table_2024_Batch_2',
         'Unified_Time_Table_2024_batch_2',
         'Unified_Time_Table_Batch_2',
@@ -973,12 +1008,22 @@ export async function fetchNotificationCount(): Promise<number> {
   const token = getSessionToken()
   if (!token) return 0
   try {
-    const resp = await fetch('/proxy/notifications/getcount?channel=1', {
+    const response = await fetch('/proxy/notifications/getcount?channel=1', {
       headers: { 'Accept': 'application/json, */*', 'X-Session-Token': token },
     })
-    await throwIfUnauthorized(resp)
-    if (!resp.ok) return 0
-    const text = await resp.text()
+    if (response.status === 404) {
+      console.log('[notifications] endpoint not found, returning 0');
+      return 0
+    }
+    await throwIfUnauthorized(response)
+    if (response.status === 403) {
+      throw new Error('Not authenticated [forbidden]')
+    }
+    if (response.status >= 500) {
+      throw new Error(`Server error: HTTP ${response.status}`)
+    }
+    if (!response.ok) return 0
+    const text = await response.text()
     if (!text.trim()) return 0
     const d = JSON.parse(text)
     return typeof d === 'number' ? d : (d?.count ?? d?.unread_count ?? 0)
