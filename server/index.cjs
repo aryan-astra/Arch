@@ -46,6 +46,11 @@ const SRM_HTTPS_AGENT = SRM_TLS_INSECURE
 let redisClient = null
 const authEvents = []
 const pushSubscriptions = new Map()
+let lastLoginAttemptAt = null
+let lastLoginSuccessAt = null
+
+const TRANSIENT_REASONS = ['timeout', 'network_error', 'econnreset']
+const DEFINITIVE_REASONS = ['user_not_found', 'invalid_password', 'csrf_extract_failed']
 
 const UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
 
@@ -91,7 +96,43 @@ async function withTimeoutRetry(requestFn, label) {
 function csrfFromJar(jar) {
   const cookies = jar.toJSON().cookies || []
   const c = cookies.find(c => c.key === 'iamcsr')
-  return c ? c.value : ''
+  return c ? c.value : null
+}
+
+function extractCsrfToken(jar, signinHtml) {
+  const tokenFromJar = csrfFromJar(jar)
+  if (tokenFromJar) return tokenFromJar
+
+  const scriptMatch = signinHtml.match(/iamcsrcoo=([a-f0-9\-]{36})/)
+  if (scriptMatch) return scriptMatch[1]
+
+  const metaMatch = signinHtml.match(/<meta[^>]+name=["']csrf-token["'][^>]+content=["']([^"']+)/)
+  if (metaMatch) return metaMatch[1]
+
+  console.log('[auth] CSRF extraction failed - all methods exhausted')
+  return null
+}
+
+async function withRetry(fn, maxAttempts = 2, delayMs = 800) {
+  for (let i = 0; i < maxAttempts; i += 1) {
+    try {
+      const result = await fn()
+      return result
+    } catch (err) {
+      const message = String(err?.message || '').toLowerCase()
+      const reason = String(err?.reason || '').toLowerCase()
+      const isDefinitive = DEFINITIVE_REASONS.some((r) => reason === r || message.includes(r))
+      if (isDefinitive || i === maxAttempts - 1) throw err
+      console.log(`[auth] transient error, retrying in ${delayMs}ms...`)
+      await new Promise((resolve) => setTimeout(resolve, delayMs))
+    }
+  }
+}
+
+function hasAuthDrift(responseText) {
+  return typeof responseText === 'string' &&
+    (responseText.includes('iamcsrcoo') ||
+      responseText.includes('signin?hide_fp'))
 }
 
 function sessionKey(token) {
@@ -493,6 +534,7 @@ async function pushDesignStatusPayload(email) {
 app.post('/auth/login', async (req, res) => {
   const { email, password, trusted = false } = req.body || {}
   const normalizedEmail = normalizeIdentity(email)
+  lastLoginAttemptAt = new Date().toISOString()
   if (!email || !password) {
     recordAuthEvent('login_rejected', {
       reason: 'missing_credentials',
@@ -505,8 +547,9 @@ app.post('/auth/login', async (req, res) => {
   const jar = new CookieJar()
   const client = makeClient(jar)
   const cliTime = Date.now()
+  let signinHtml = ''
   const headers = () => {
-    const csrf = csrfFromJar(jar)
+    const csrf = extractCsrfToken(jar, signinHtml)
     return {
       'Origin': BASE,
       'Referer': `${BASE}/accounts/p/${ORG}/signin`,
@@ -516,7 +559,7 @@ app.post('/auth/login', async (req, res) => {
 
   try {
     // Step 1: Load sign-in page — seeds CSRF + session cookies
-    await withTimeoutRetry(
+    const signinRes = await withTimeoutRetry(
       () => client.get(`${BASE}/accounts/p/${ORG}/signin`, {
         params: {
           hide_fp: 'true',
@@ -529,68 +572,109 @@ app.post('/auth/login', async (req, res) => {
       }),
       'signin bootstrap'
     )
+    signinHtml = typeof signinRes?.data === 'string' ? signinRes.data : ''
 
-    // Step 2: Locate (org discovery)
-    await client.post(
-      `${BASE}/accounts/p/${ORG}/accounts/public/api/locate`,
-      null,
-      { params: { cli_time: cliTime, orgtype: '40', service_language: 'en' }, headers: headers() }
-    )
-
-    // Step 3: Lookup — get userId + digest
-    const lookupResp = await withTimeoutRetry(
-      () => client.post(
-        `${BASE}/accounts/p/${ORG}/signin/v2/lookup/${encodeURIComponent(email)}`,
-        new URLSearchParams({
-          mode: 'primary',
-          cli_time: String(cliTime),
-          orgtype: '40',
-          service_language: 'en',
-          serviceurl: SERVICE_URL,
-        }),
-        { headers: { ...headers(), 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' } }
-      ),
-      'account lookup'
-    )
-
-    const lookupData = lookupResp.data
-    // Zoho response: { lookup: { identifier: "userId", digest: "...", ... } }
-    let userId = lookupData?.lookup?.identifier || lookupData?.data?.userId || lookupData?.userId
-    let digest = lookupData?.lookup?.digest || lookupData?.data?.digest || lookupData?.digest
-
-    if (!userId) {
+    const csrf = extractCsrfToken(jar, signinHtml)
+    if (!csrf) {
       recordAuthEvent('login_failed', {
-        reason: 'user_not_found',
+        reason: 'csrf_extract_failed',
         email: normalizedEmail,
         ip: clientIp(req),
       })
-      return res.status(401).json({ error: 'User not found. Check your SRM email.', reason: 'user_not_found' })
+      return res.status(401).json({
+        status: 401,
+        reason: 'csrf_extract_failed',
+        error: 'Could not extract security token. Try again.',
+      })
     }
+
+    // Step 2: Locate (org discovery)
+    const locateRes = await withRetry(async () => {
+      try {
+        return await client.post(
+          `${BASE}/accounts/p/${ORG}/accounts/public/api/locate`,
+          null,
+          { params: { cli_time: cliTime, orgtype: '40', service_language: 'en' }, headers: headers() }
+        )
+      } catch (err) {
+        const lowerMsg = String(err?.message || '').toLowerCase()
+        const lowerCode = String(err?.code || '').toLowerCase()
+        if (TRANSIENT_REASONS.some((reason) => lowerMsg.includes(reason) || lowerCode.includes(reason))) {
+          err.reason = 'network_error'
+        }
+        throw err
+      }
+    })
+    console.log('[auth] locate status:', locateRes.status)
+
+    // Step 3: Lookup — get userId + digest
+    const lookupRes = await client.post(
+      `${BASE}/accounts/p/${ORG}/signin/v2/lookup/${encodeURIComponent(email)}`,
+      new URLSearchParams({
+        mode: 'primary',
+        cli_time: String(cliTime),
+        orgtype: '40',
+        service_language: 'en',
+        serviceurl: SERVICE_URL,
+      }),
+      {
+        headers: { ...headers(), 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+        maxRedirects: 0,
+        validateStatus: (s) => s < 400 || s === 302,
+      }
+    )
+    console.log('[auth] lookup status:', lookupRes.status)
+
+    const lookupData = lookupRes.data
+    const userId = lookupData?.lookup?.identifier
+      ?? lookupData?.data?.userId
+      ?? lookupData?.userId
+      ?? null
+    console.log('[auth] userId extracted:',
+      userId ? 'yes' : 'MISSING',
+      '| numeric:', /^\d+$/.test(userId ?? ''))
+    if (!userId || !/^\d+$/.test(userId)) {
+      console.log('[auth] userId invalid - lookup keys present:', Object.keys(lookupData ?? {}))
+      return res.status(401).json({
+        error: 'Could not identify user account.',
+        reason: 'user_id_extraction_failed',
+      })
+    }
+    console.log('[auth] userId value:', `${String(userId).slice(0, 4)}...`)
+    let digest = lookupData?.lookup?.digest || lookupData?.data?.digest || lookupData?.digest
 
     // Step 4: Submit password
     const pwUrl = `${BASE}/accounts/p/${ORG}/signin/v2/primary/${userId}/password`
-    const pwResp = await withTimeoutRetry(
-      () => client.post(
-        pwUrl,
-        JSON.stringify({ passwordauth: { password } }),
-        {
-          params: {
-            ...(digest ? { digest } : {}),
-            cli_time: cliTime,
-            orgtype: '40',
-            service_language: 'en',
-            serviceurl: SERVICE_URL,
-          },
-          headers: {
-            ...headers(),
-            'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-          },
-        }
-      ),
-      'password submit'
+    const pwRes = await client.post(
+      pwUrl,
+      JSON.stringify({ passwordauth: { password } }),
+      {
+        params: {
+          ...(digest ? { digest } : {}),
+          cli_time: cliTime,
+          orgtype: '40',
+          service_language: 'en',
+          serviceurl: SERVICE_URL,
+        },
+        headers: {
+          ...headers(),
+          'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+        },
+      }
     )
+    console.log('[auth] password status:', pwRes.status)
 
-    const pwData = pwResp.data
+    const pwBodyText = typeof pwRes.data === 'string' ? pwRes.data : JSON.stringify(pwRes.data || '')
+    if (hasAuthDrift(pwBodyText)) {
+      recordAuthEvent('login_failed', {
+        reason: 'auth_drift',
+        email: normalizedEmail,
+        ip: clientIp(req),
+      })
+      return res.status(401).json({ error: 'Authentication drift detected. Please retry login.', reason: 'auth_drift' })
+    }
+
+    const pwData = pwRes.data
     // Zoho signals wrong password via status_code >= 400 in the body (HTTP status is still 200)
     // e.g. { status_code: 500, errors: [{ code: "IN102", message: "Invalid password" }] }
     const pwStatusCode = pwData?.status_code ?? 0
@@ -647,7 +731,7 @@ app.post('/auth/login', async (req, res) => {
     }
 
     // Step 6: Access portal to get JSESSIONID
-    await withTimeoutRetry(
+    const portalRes = await withTimeoutRetry(
       () => client.get(`${PORTAL_URL}/redirectFromLogin`, {
         headers: headers(),
         maxRedirects: 10,
@@ -655,6 +739,15 @@ app.post('/auth/login', async (req, res) => {
       }),
       'portal redirect'
     )
+    const portalBodyText = typeof portalRes.data === 'string' ? portalRes.data : JSON.stringify(portalRes.data || '')
+    if (hasAuthDrift(portalBodyText)) {
+      recordAuthEvent('login_failed', {
+        reason: 'auth_drift',
+        email: normalizedEmail,
+        ip: clientIp(req),
+      })
+      return res.status(401).json({ error: 'Authentication drift detected. Please retry login.', reason: 'auth_drift' })
+    }
     // Warm up the attendance page to ensure JSESSIONID is valid for the app
     const warmupResp = await withTimeoutRetry(
       () => client.get(`${BASE}/srm_university/academia-academic-services/page/My_Attendance`, {
@@ -690,6 +783,7 @@ app.post('/auth/login', async (req, res) => {
       lastSeenAt: now,
       expiresAt: now + ttl,
     })
+    lastLoginSuccessAt = new Date().toISOString()
 
     recordAuthEvent('login_success', {
       reason: 'authenticated',
@@ -911,6 +1005,10 @@ app.use('/proxy', async (req, res) => {
 
     console.log(`[proxy] ${path} → status ${resp.status}, size ${JSON.stringify(resp.data || '').length}`)
     const ct = resp.headers['content-type'] || 'text/html'
+    if (path.startsWith('/notifications/getcount') && resp.status === 404) {
+      console.log('[proxy] notifications count endpoint missing upstream - returning 0')
+      return res.status(200).json({ count: 0 })
+    }
     if (resp.status === 401 || hasUpstreamAuthDrift(ct, resp.data)) {
       await deleteSession(token)
       recordAuthEvent('session_invalid', {
@@ -1001,6 +1099,18 @@ app.get('/auth/health', async (req, res) => {
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message, store: redisClient ? 'redis' : 'memory' })
   }
+})
+
+app.get('/health/parser', (req, res) => {
+  const checks = {
+    srmGradesLoaded: true,
+    sessionStoreOk: sessions instanceof Map,
+    nodeVersion: process.version,
+    uptime: `${Math.floor(process.uptime())}s`,
+    lastLoginAttempt: lastLoginAttemptAt ?? 'none',
+    lastLoginSuccess: lastLoginSuccessAt ?? 'none',
+  }
+  res.json({ ok: true, checks, ts: Date.now() })
 })
 
 function sweepExpiredInMemorySessions() {

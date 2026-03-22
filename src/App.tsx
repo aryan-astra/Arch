@@ -1,10 +1,11 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { motion } from "framer-motion"
-import { Home, BarChart2, Clock3, CalendarDays, User } from "lucide-react"
+import { Home, BarChart2, Clock3, CalendarDays, User, UtensilsCrossed } from "lucide-react"
 import {
   classesSafeToMiss, classesNeededToReach,
 } from "./data/real-data"
 import type { AttendanceCourse, InternalMark, StudentInfo } from "./data/real-data"
+import { DAY_KEYS, DAY_LONG_LABEL, DAY_SHORT_LABEL, MEAL_LABEL, MEAL_WINDOW_TEXT, getActiveMeal, getDayKeyFromDate, getDayTypeFromDate, getMenuForDay, isNonVegItem } from "./data/mess-schedule"
+import type { MessDayKey, MessMealKey } from "./data/mess-schedule"
 import { BATCH2_TIMETABLE, getTodayClasses, fetchAttendance, fetchCurrentDayOrder, fetchProfilePatch, fetchTimetableProfileAndCredits, fetchAcademicCalendarEvents, fetchNotificationCount, fetchPushDesignStatus, fetchPushPublicKey, savePushSubscription, fetchAdminSelfMetrics, validateSession, loginUser, logoutUser, getSessionToken } from "./lib/api"
 import type { AcademicCalendarEvent, AdminSelfMetrics } from "./lib/api"
 import * as sessionStorageLib from "./lib/storage"
@@ -31,7 +32,7 @@ const EMPTY_STUDENT: StudentInfo = {
 }
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
-type Screen = "home" | "attendance" | "schedule" | "calendar" | "profile" | "cooking"
+type Screen = "home" | "attendance" | "schedule" | "calendar" | "mess" | "profile" | "cooking"
 type LoginStep = "email" | "password"
 const THEME_OPTIONS = [
   { key: "dark", label: "Midnight" },
@@ -597,40 +598,6 @@ function normalizeAppPath(pathname: string): string {
   return pathname.replace(/\/+$/, '') || '/'
 }
 
-function generateJoiningNetIds(count = 160): string[] {
-  const letters = 'abcdefghijklmnopqrstuvwxyz'
-  const target = Math.max(100, Math.min(200, count))
-  const generated = new Set<string>()
-  let attempts = 0
-  const maxAttempts = target * 40
-
-  while (generated.size < target && attempts < maxAttempts) {
-    const prefix =
-      letters[Math.floor(Math.random() * letters.length)] +
-      letters[Math.floor(Math.random() * letters.length)]
-    const digits = String(Math.floor(Math.random() * 10000)).padStart(4, '0')
-    generated.add(`${prefix}${digits}@${SRM_EMAIL_DOMAIN}`)
-    attempts += 1
-  }
-
-  if (generated.size < target) {
-    for (let i = 0; i < letters.length && generated.size < target; i += 1) {
-      for (let j = 0; j < letters.length && generated.size < target; j += 1) {
-        const digits = String((i * 37 + j * 19) % 10000).padStart(4, '0')
-        generated.add(`${letters[i]}${letters[j]}${digits}@${SRM_EMAIL_DOMAIN}`)
-      }
-    }
-  }
-
-  return Array.from(generated)
-}
-
-const JOINING_NETIDS = generateJoiningNetIds(160)
-const LIVE_FEED_CARDS = JOINING_NETIDS.map((netId, idx) => ({
-  id: `${netId}-${idx}`,
-  netId,
-}))
-
 function normalizeLoginEmail(raw: string): string {
   const trimmed = raw.trim().toLowerCase()
   if (!trimmed) return ''
@@ -640,77 +607,6 @@ function normalizeLoginEmail(raw: string): string {
 function emailLocalPart(raw: string): string {
   const normalized = normalizeLoginEmail(raw)
   return normalized.split('@')[0] ?? normalized
-}
-
-function LoginLiveFeedStack() {
-  const [index, setIndex] = useState(0)
-  const total = LIVE_FEED_CARDS.length
-
-  useEffect(() => {
-    if (total === 0) return
-    const id = setInterval(() => {
-      setIndex((prev) => (prev + 1) % total)
-    }, 3000)
-    return () => clearInterval(id)
-  }, [total])
-
-  const stack = useMemo(() => {
-    if (total === 0) return []
-    return [0, 1, 2].map((offset) => {
-      const cursor = (index + offset) % total
-      return LIVE_FEED_CARDS[cursor]
-    })
-  }, [index, total])
-
-  if (stack.length === 0) return null
-
-  const layers = [
-    { scale: 1, opacity: 1, y: 0, zIndex: 30 },
-    { scale: 0.95, opacity: 0.6, y: 20, zIndex: 20 },
-    { scale: 0.9, opacity: 0.3, y: 40, zIndex: 10 },
-  ]
-  const layerFilters = ["none", "blur(0.6px) saturate(0.82)", "blur(1.1px) saturate(0.72)"] as const
-
-  return (
-    <div className="login-live-feed" aria-live="polite">
-      <div className="login-live-feed-title">
-        <span className="login-live-feed-dot" />
-        Live Feed
-      </div>
-      <div className="login-live-feed-stack">
-        {stack.map((card, layerIdx) => (
-          <motion.div
-            key={card.id}
-            className={`login-live-feed-card layer-${layerIdx}${layerIdx === 0 ? " active" : ""}`}
-            aria-hidden={layerIdx !== 0}
-            initial={false}
-            animate={{
-              scale: layers[layerIdx].scale,
-              opacity: layers[layerIdx].opacity,
-              y: layers[layerIdx].y,
-            }}
-            transition={{
-              type: "spring",
-              stiffness: 260,
-              damping: 24,
-              mass: 0.9,
-            }}
-            style={{
-              zIndex: layers[layerIdx].zIndex,
-              pointerEvents: layerIdx === 0 ? "auto" : "none",
-              transformOrigin: "center top",
-              filter: layerFilters[layerIdx],
-            }}
-          >
-            <div className="login-live-feed-message">
-              <strong>{card.netId}</strong>
-              <span>just joined Arch</span>
-            </div>
-          </motion.div>
-        ))}
-      </div>
-    </div>
-  )
 }
 
 function mergeStudent(base: StudentInfo, patch: Partial<StudentInfo>): StudentInfo {
@@ -1393,8 +1289,6 @@ function LoginScreen({ onSuccess }: { onSuccess: (email: string) => void }) {
           </span>
         </div>
       </div>
-      {step === "email" && <LoginLiveFeedStack />}
-
       <div className="login-form-area">
         {step === "email" ? (
           <form onSubmit={handleEmailNext} style={{ display: "flex", flexDirection: "column" }}>
@@ -1778,7 +1672,17 @@ function HomeScreen({ student, fallbackName, attendance, timetableByDay, refresh
 }
 
 // ─── Attendance ────────────────────────────────────────────────────────────────
-function AttendanceScreen({ attendance, marks }: { attendance: AttendanceCourse[]; marks: InternalMark[] }) {
+function AttendanceScreen({
+  attendance,
+  marks,
+  parserStatus,
+  parserHint,
+}: {
+  attendance: AttendanceCourse[]
+  marks: InternalMark[]
+  parserStatus?: 'ok' | 'structure_mismatch'
+  parserHint?: string
+}) {
   const marksMap = useMemo(() => {
     const m: Record<string, InternalMark[]> = {}
     marks.forEach(mk => { if (!m[mk.courseCode]) m[mk.courseCode] = []; m[mk.courseCode]!.push(mk) })
@@ -1874,6 +1778,12 @@ function AttendanceScreen({ attendance, marks }: { attendance: AttendanceCourse[
 
   return (
     <>
+      {parserStatus === 'structure_mismatch' && (
+        <div className="error-banner" style={{ margin: '0 16px 10px' }}>
+          {parserHint || 'Portal data may have changed - pull to refresh or check academia.srmist.edu.in directly'}
+        </div>
+      )}
+
       <div className="attendance-overview-card">
         <div className="attendance-overview-top">
           <div className="attendance-overview-main">
@@ -2468,6 +2378,100 @@ function ProfileScreen({
   )
 }
 
+function MessScreen() {
+  const mealKeys: MessMealKey[] = ['breakfast', 'lunch', 'snacks', 'dinner']
+  const nowTs = useNowTimestamp(60_000)
+  const todayDate = useMemo(() => new Date(nowTs), [nowTs])
+  const todayDay = getDayKeyFromDate(todayDate)
+  const [selectedDay, setSelectedDay] = useState<MessDayKey>(() => getDayKeyFromDate(new Date()))
+
+  const dayType = useMemo(() => {
+    const dayIndex = DAY_KEYS.indexOf(selectedDay)
+    return getDayTypeFromDate(new Date(2026, 0, 4 + Math.max(0, dayIndex)))
+  }, [selectedDay])
+
+  const dayMenu = getMenuForDay(selectedDay)
+  const liveMealToday = getActiveMeal(undefined, getDayTypeFromDate(todayDate), todayDate)
+
+  const formatMealWindow = useCallback((raw: string): string => {
+    return raw
+      .replace(/\./g, ':')
+      .replace(/\s+Noon\b/gi, ' PM')
+      .replace(/\s+to\s+/gi, ' – ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  }, [])
+
+  return (
+    <>
+      <div className="section-header">
+        <span className="section-title">Mess</span>
+        <span className="section-action">{DAY_LONG_LABEL[selectedDay]}</span>
+      </div>
+
+      <div className="day-tab-bar">
+        {DAY_KEYS.map((dayKey) => (
+          <button
+            key={dayKey}
+            className={`day-tab${selectedDay === dayKey ? ' active' : ''}${todayDay === dayKey ? ' today' : ''}`}
+            onClick={() => setSelectedDay(dayKey)}
+            type="button"
+            aria-label={`Show ${DAY_LONG_LABEL[dayKey]} menu`}
+          >
+            {DAY_SHORT_LABEL[dayKey]}
+          </button>
+        ))}
+      </div>
+
+      <div className="course-list mess-course-list">
+        {mealKeys.map((mealKey) => {
+          const meal = dayMenu[mealKey]
+          const specials = meal.specials.filter((item) => item.trim().length > 0)
+          const specialSet = new Set(specials.map((item) => item.toLowerCase()))
+          const baseItems = meal.items.filter((item) => !specialSet.has(item.toLowerCase()))
+          const ordered = [
+            ...specials.map((item) => ({ text: item, special: true })),
+            ...baseItems.map((item) => ({ text: item, special: false })),
+          ]
+          const isLive = selectedDay === todayDay && liveMealToday === mealKey
+
+          return (
+            <article key={mealKey} className={`course-item mess-meal-card${isLive ? ' live' : ''}`}>
+              <div className="course-item-top">
+                <div className="course-item-info">
+                  <div className="course-item-code">{MEAL_LABEL[mealKey]}</div>
+                  <div className="course-item-title mess-meal-time">
+                    {formatMealWindow(MEAL_WINDOW_TEXT[dayType][mealKey])}
+                  </div>
+                </div>
+                {isLive && <span className="mess-row-live">Live</span>}
+              </div>
+
+              <div className="mess-items-wrap">
+                {ordered.map((entry) => {
+                  const isNonVeg = isNonVegItem(entry.text)
+                  return (
+                    <span
+                      key={`${mealKey}-${entry.text}`}
+                      className={`mess-item-chip${entry.special ? ' special' : ''}${isNonVeg ? ' non-veg' : ''}`}
+                    >
+                      {isNonVeg && <span className="mess-item-dot" aria-hidden="true" />}
+                      {entry.text}
+                    </span>
+                  )
+                })}
+              </div>
+            </article>
+          )
+        })}
+      </div>
+
+      <div className="mess-note">Hostel menu can change based on kitchen operations and stock availability.</div>
+      <div className="page-spacer" />
+    </>
+  )
+}
+
 function CookingScreen({ onBack }: { onBack: () => void }) {
   return (
     <div className="cooking-screen">
@@ -2577,6 +2581,8 @@ export default function App() {
   const [calendarEvents, setCalendarEvents] = useState<AcademicCalendarEvent[]>(() => bootCache?.calendarEvents ?? [])
   const [calendarLoading, setCalendarLoading] = useState(false)
   const [calendarError, setCalendarError] = useState('')
+  const [attendanceParserStatus, setAttendanceParserStatus] = useState<'ok' | 'structure_mismatch'>('ok')
+  const [attendanceParserHint, setAttendanceParserHint] = useState('')
   const [isOffline, setIsOffline] = useState(!navigator.onLine)
   const [needUpdate, setNeedUpdate] = useState(false)
   const [timetableByDay, setTimetableByDay] = useState<TimetableByDay>(() => {
@@ -2923,6 +2929,8 @@ export default function App() {
     setCourseSlotOverrides({})
     setCalendarEvents([])
     setCalendarError('')
+    setAttendanceParserStatus('ok')
+    setAttendanceParserHint('')
     setTimetableByDay({})
     setNotificationCount(0)
     setAdminMetrics(null)
@@ -3052,6 +3060,8 @@ export default function App() {
       fetchAttendance(),
       dayOrderPromise,
     ])
+    setAttendanceParserStatus(res.parserStatus === 'structure_mismatch' ? 'structure_mismatch' : 'ok')
+    setAttendanceParserHint(res.hint ?? '')
     const nextDayOrder = typeof dayOrderResult === 'number' && Number.isFinite(dayOrderResult) ? dayOrderResult : null
     if (dayOrderRef.current !== nextDayOrder) {
       dayOrderRef.current = nextDayOrder
@@ -3232,6 +3242,7 @@ export default function App() {
     { key: "attendance" as const, title: "Attendance", icon: BarChart2 },
     { key: "schedule"   as const, title: "Timetable",  icon: Clock3 },
     { key: "calendar"   as const, title: "Calendar",   icon: CalendarDays },
+    { key: "mess"       as const, title: "Mess",       icon: UtensilsCrossed },
     { key: "profile"    as const, title: "Profile",    icon: User, badgeCount: notificationCount },
   ]
   const fallbackName = loggedEmail.split('@')[0] || 'Student'
@@ -3308,7 +3319,12 @@ export default function App() {
           />
         )}
         {screen === "attendance" && (
-          <AttendanceScreen attendance={attendance} marks={marks} />
+          <AttendanceScreen
+            attendance={attendance}
+            marks={marks}
+            parserStatus={attendanceParserStatus}
+            parserHint={attendanceParserHint}
+          />
         )}
         {screen === "schedule" && (
           <ScheduleScreen
@@ -3319,6 +3335,7 @@ export default function App() {
           />
         )}
         {screen === "calendar" && <CalendarScreen events={calendarEvents} loading={calendarLoading} error={calendarError} onDayOrderSync={setDayOrder} />}
+        {screen === "mess" && <MessScreen />}
         {screen === "profile" && (
           <ProfileScreen
             student={student}
