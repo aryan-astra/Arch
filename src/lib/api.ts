@@ -864,8 +864,8 @@ export async function fetchAcademicCalendarEvents(): Promise<AcademicCalendarEve
       ? oddResult.reason
       : evenResult.status === 'rejected'
         ? evenResult.reason
-        : new Error('No planner events found')
-    throw reason instanceof Error ? reason : new Error('Failed to load academic planner')
+        : new Error('No academic calendar events found')
+    throw reason instanceof Error ? reason : new Error('Failed to load academic calendar')
   }
 
   return events.sort((a, b) => (

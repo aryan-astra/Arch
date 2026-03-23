@@ -61,7 +61,7 @@ export const DAY_LONG_LABEL: Record<MessDayKey, string> = {
   saturday: 'Saturday',
 }
 
-export const HOLIDAY_DAY_KEYS = new Set<MessDayKey>(['sunday'])
+export const HOLIDAY_DAY_KEYS = new Set<MessDayKey>(['saturday', 'sunday'])
 
 export const WORKING_DAY_MEAL_WINDOW_MINUTES: Record<MessMealKey, { start: number; end: number }> = {
   breakfast: { start: 420, end: 540 },
@@ -194,6 +194,7 @@ export function getMealWindows(dayType: MessDayType = 'working'): Record<MessMea
 
 export function getDayTypeFromDate(date: Date = new Date()): MessDayType {
   const dayKey = getDayKeyFromDate(date)
+  if (dayKey === 'saturday' || dayKey === 'sunday') return 'holiday'
   return HOLIDAY_DAY_KEYS.has(dayKey) ? 'holiday' : 'working'
 }
 

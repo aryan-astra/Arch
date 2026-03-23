@@ -1,18 +1,21 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Home, BarChart2, Clock3, CalendarDays, User, UtensilsCrossed } from "lucide-react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Home, BarChart2, Clock3, CalendarDays, TrendingUp, User, UtensilsCrossed } from "lucide-react"
+import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, YAxis } from "recharts"
 import {
   classesSafeToMiss, classesNeededToReach,
 } from "./data/real-data"
 import type { AttendanceCourse, InternalMark, StudentInfo } from "./data/real-data"
 import { DAY_KEYS, DAY_LONG_LABEL, DAY_SHORT_LABEL, MEAL_LABEL, MEAL_WINDOW_TEXT, getActiveMeal, getDayKeyFromDate, getDayTypeFromDate, getMenuForDay, isNonVegItem } from "./data/mess-schedule"
 import type { MessDayKey, MessMealKey } from "./data/mess-schedule"
-import { BATCH2_TIMETABLE, getTodayClasses, fetchAttendance, fetchCurrentDayOrder, fetchProfilePatch, fetchTimetableProfileAndCredits, fetchAcademicCalendarEvents, fetchNotificationCount, fetchPushDesignStatus, fetchPushPublicKey, savePushSubscription, fetchAdminSelfMetrics, validateSession, loginUser, logoutUser, getSessionToken } from "./lib/api"
+import { BATCH2_TIMETABLE, getTodayClasses, fetchAttendance, fetchCurrentDayOrder, fetchProfilePatch, fetchTimetableProfileAndCredits, fetchAcademicCalendarEvents, fetchNotificationCount, fetchPushDesignStatus, fetchPushPublicKey, savePushSubscription, fetchAdminSelfMetrics, loginUser, logoutUser, getSessionToken } from "./lib/api"
 import type { AcademicCalendarEvent, AdminSelfMetrics } from "./lib/api"
 import * as sessionStorageLib from "./lib/storage"
 import { ExpandableNav } from "./components/expandable-tabs"
 import { AcademiaLogo } from "./components/AcademiaLogo"
 import { HeroBadge } from "./components/HeroBadge"
-import { ProgressiveBlur } from "./components/ProgressiveBlur"
+import { GradualBlur } from "./components/GradualBlur"
+import Grainient from "./components/Grainient"
+import { AnimatedShinyText } from "./components/AnimatedShinyText"
 import changelogEntriesData from "./data/changelog.json"
 
 const loadSessionSnapshot = sessionStorageLib.loadSessionSnapshot
@@ -32,7 +35,7 @@ const EMPTY_STUDENT: StudentInfo = {
 }
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
-type Screen = "home" | "attendance" | "schedule" | "calendar" | "mess" | "profile" | "cooking"
+type Screen = "home" | "attendance" | "schedule" | "calendar" | "marks" | "mess" | "profile" | "cooking"
 type LoginStep = "email" | "password"
 const THEME_OPTIONS = [
   { key: "dark", label: "Midnight" },
@@ -123,11 +126,28 @@ const LATEST_CHANGELOG_INDEX = CHANGELOG_ENTRIES.length > 0
   )
   : -1
 const CURRENT_APP_VERSION = CHANGELOG_ENTRIES[LATEST_CHANGELOG_INDEX]?.version ?? 'v1.0.0'
-const MarksLineChart = lazy(() => import("./components/MarksLineChart"))
-const PASS_MARK_PCT = 50
+const SPECIAL_FRUIT_SURPRISES = ['✨', '🍉', '🍍', '🥭', '🍓'] as const
+const QUICK_DOCK_STORAGE_KEY = 'arch.quickDockTabs.v1'
+const FLOATING_LAYOUT_STORAGE_KEY = 'arch.floatingDockLayout.v1'
+const FLOATING_TAB_ORDER: Screen[] = ['home', 'attendance', 'schedule', 'calendar', 'marks', 'mess', 'profile']
+const FLOATING_DOCK_DEFAULT_ORDER: Screen[] = ['home', 'attendance', 'schedule', 'calendar', 'profile']
+const FLOATING_TAB_KEYS = new Set<Screen>(['home', 'attendance', 'schedule', 'calendar', 'marks', 'mess', 'profile'])
 interface BeforeInstallPromptEvent extends Event {
   prompt(): Promise<void>
   readonly userChoice: Promise<{ outcome: "accepted" | "dismissed" }>
+}
+
+function normalizeFloatingDockLayout(source: unknown): Screen[] {
+  if (!Array.isArray(source)) return []
+  const seen = new Set<Screen>()
+  const out: Screen[] = []
+  for (const item of source) {
+    if ((item === 'home' || item === 'attendance' || item === 'schedule' || item === 'calendar' || item === 'marks' || item === 'mess' || item === 'profile') && !seen.has(item)) {
+      seen.add(item)
+      out.push(item)
+    }
+  }
+  return out
 }
 
 // ─── Theme helpers ─────────────────────────────────────────────────────────────
@@ -707,10 +727,6 @@ function attnClass(pct: number): "danger" | "ok" {
   return pct > 75 ? "ok" : "danger"
 }
 
-function markClass(pct: number): "low" | "ok" {
-  return pct < PASS_MARK_PCT ? "low" : "ok"
-}
-
 const ROMAN_TO_INT: Record<string, number> = {
   I: 1,
   II: 2,
@@ -764,6 +780,20 @@ function compareInternalMarks(a: InternalMark, b: InternalMark): number {
   const byAssessment = compareAssessmentNames(a.test, b.test)
   if (byAssessment !== 0) return byAssessment
   return a.max - b.max
+}
+
+function isPracticalCourse(course: AttendanceCourse): boolean {
+  return (
+    course.category === 'Practical' ||
+    /L$/i.test(course.code) ||
+    /\blab\b/i.test(course.title)
+  )
+}
+
+function shortCourseTitle(title: string): string {
+  const cleaned = title.replace(/\s+/g, ' ').trim()
+  if (cleaned.length <= 34) return cleaned
+  return `${cleaned.slice(0, 31).trimEnd()}...`
 }
 
 // Merge consecutive same-course periods
@@ -1105,7 +1135,7 @@ function CalendarScreen({ events, loading, error, onDayOrderSync }: {
       {loading && (
         <div className="circulars-loading">
           <div className="loading-ring" />
-          <span>Loading academic planner…</span>
+          <span>Loading academic calendar…</span>
         </div>
       )}
       {!loading && error && <div className="error-banner" style={{ margin: '0 16px' }}>{error}</div>}
@@ -1398,7 +1428,7 @@ function LoginScreen({ onSuccess }: { onSuccess: (email: string) => void }) {
 }
 
 // ─── Home ──────────────────────────────────────────────────────────────────────
-function HomeScreen({ student, fallbackName, attendance, timetableByDay, refreshing, onRefresh, dayOrder, onDayOrderChange, lastUpdated, dataLoading }: {
+function HomeScreen({ student, fallbackName, attendance, timetableByDay, refreshing, onRefresh, dayOrder, onDayOrderChange, lastUpdated, dataLoading, onOpenCooking }: {
   student: StudentInfo
   fallbackName: string
   attendance: AttendanceCourse[]
@@ -1409,12 +1439,12 @@ function HomeScreen({ student, fallbackName, attendance, timetableByDay, refresh
   onDayOrderChange: (d: number | null) => void
   lastUpdated: Date | null
   dataLoading: boolean
+  onOpenCooking: () => void
 }) {
   const overall = overallPct(attendance)
   const animatedOverall = useCountUp(overall)
   const below = attendance.filter(c => c.percent <= 75)
   const todayClasses = groupClasses(getTodayClasses(dayOrder, attendance, timetableByDay))
-  const todayClassesPreview = todayClasses.slice(0, 4)
   const now = useClock()
   const nowTs = useNowTimestamp()
   const [showDayPicker, setShowDayPicker] = useState(false)
@@ -1449,6 +1479,8 @@ function HomeScreen({ student, fallbackName, attendance, timetableByDay, refresh
     if (section) parts.push(section.toUpperCase())
     return parts.length > 0 ? parts.join(' · ') : 'Syncing profile…'
   })()
+  const normalizedCurrentVersion = CURRENT_APP_VERSION.trim().replace(/^v/i, '')
+  const homeVersionLabel = `🪸 Updated version : v${normalizedCurrentVersion}`
 
   return (
     <>
@@ -1459,9 +1491,22 @@ function HomeScreen({ student, fallbackName, attendance, timetableByDay, refresh
             <div className="welcome-greeting">{greeting},</div>
             <div className="welcome-name">{displayName}</div>
           </div>
-          <span className="day-badge" onClick={() => setShowDayPicker(true)}>
-            {dayOrder ? `Day ${dayOrder}` : 'No Day Order'}
-          </span>
+          <div className="welcome-row-actions">
+            <button
+              type="button"
+              className="welcome-version-chip"
+              onClick={onOpenCooking}
+              aria-label="Open changelog"
+              title="Open changelog"
+            >
+              <AnimatedShinyText className="welcome-version-text" shimmerWidth={84}>
+                {homeVersionLabel}
+              </AnimatedShinyText>
+            </button>
+            <span className="day-badge" onClick={() => setShowDayPicker(true)}>
+              {dayOrder ? `Day ${dayOrder}` : 'No Day Order'}
+            </span>
+          </div>
         </div>
         <div className="welcome-meta">
           <span className="meta-pill">{student.regNo || "Loading ID…"}</span>
@@ -1582,7 +1627,7 @@ function HomeScreen({ student, fallbackName, attendance, timetableByDay, refresh
         </div>
       ) : (
         <div className="sched-list">
-          {todayClassesPreview.map(cls => {
+          {todayClasses.map(cls => {
             const itemKey = `${cls.course.code}|${cls.course.type}`
             const s = parseSlotStart(cls.timeSlot)
             const e = parseSlotEnd(cls.timeSlot)
@@ -1632,11 +1677,6 @@ function HomeScreen({ student, fallbackName, attendance, timetableByDay, refresh
           })}
         </div>
       )}
-      {todayClasses.length > todayClassesPreview.length && (
-        <div style={{ padding: '6px 16px 0', fontSize: 11, color: 'var(--ink-4)' }}>
-          Showing first {todayClassesPreview.length}. See full day in Timetable tab.
-        </div>
-      )}
       <div className="page-spacer" />
       {showDayPicker && (
         <div className="sheet-backdrop" onClick={() => setShowDayPicker(false)}>
@@ -1674,22 +1714,14 @@ function HomeScreen({ student, fallbackName, attendance, timetableByDay, refresh
 // ─── Attendance ────────────────────────────────────────────────────────────────
 function AttendanceScreen({
   attendance,
-  marks,
   parserStatus,
   parserHint,
 }: {
   attendance: AttendanceCourse[]
-  marks: InternalMark[]
   parserStatus?: 'ok' | 'structure_mismatch'
   parserHint?: string
 }) {
-  const marksMap = useMemo(() => {
-    const m: Record<string, InternalMark[]> = {}
-    marks.forEach(mk => { if (!m[mk.courseCode]) m[mk.courseCode] = []; m[mk.courseCode]!.push(mk) })
-    Object.values(m).forEach((items) => items.sort(compareInternalMarks))
-    return m
-  }, [marks])
-  const [activeInsight, setActiveInsight] = useState<"planner" | "marks" | null>(null)
+  const [activeInsight, setActiveInsight] = useState<"planner" | null>(null)
   const plannerCourses = useMemo(
     () => attendance.map(c => ({ key: `${c.code}|${c.type}`, course: c })),
     [attendance]
@@ -1721,66 +1753,16 @@ function AttendanceScreen({
       safeAfterLeaves: classesSafeToMiss(projectedConducted, projectedAbsent),
     }
   }, [plannerCourse, plannedLeaves, recoveryClasses])
-  const marksTrend = useMemo(() => {
-    const titleByCode: Record<string, string> = {}
-    attendance.forEach(c => {
-      if (!titleByCode[c.code]) titleByCode[c.code] = c.title
-    })
-    return Object.entries(marksMap)
-      .map(([courseCode, entries]) => {
-        const tests = entries
-          .map(m => ({
-            rawTest: m.test,
-            test: formatAssessmentLabel(m.test),
-            scored: m.scored,
-            max: m.max,
-            pct: m.max > 0 ? (m.scored / m.max) * 100 : 0,
-          }))
-          .filter(entry => Number.isFinite(entry.pct))
-          .sort((a, b) => compareAssessmentNames(a.rawTest, b.rawTest))
-        if (tests.length === 0) return null
-        const points = tests.map(test => test.pct)
-        const avg = points.reduce((sum, p) => sum + p, 0) / points.length
-        const first = points[0] ?? 0
-        const latest = points[points.length - 1] ?? first
-        const best = Math.max(...points)
-        return {
-          courseCode,
-          title: titleByCode[courseCode] ?? courseCode,
-          tests,
-          first,
-          best,
-          avg,
-          latest,
-          delta: latest - first,
-        }
-      })
-      .filter((row): row is {
-        courseCode: string
-        title: string
-        tests: Array<{ rawTest: string; test: string; pct: number; scored: number; max: number }>
-        first: number
-        best: number
-        avg: number
-        latest: number
-        delta: number
-      } => row !== null)
-      .sort((a, b) => b.latest - a.latest)
-  }, [marksMap, attendance])
-
   const overall = overallPct(attendance)
   const animatedOverall = useCountUp(overall)
   const atRiskNow = attendance.filter(c => c.percent <= 75).length
   const projectedClass = plannerModel ? attnClass(plannerModel.projectedPct) : 'ok'
-  const overallTrendAvg = marksTrend.length > 0
-    ? marksTrend.reduce((sum, row) => sum + row.avg, 0) / marksTrend.length
-    : 0
 
   return (
     <>
       {parserStatus === 'structure_mismatch' && (
         <div className="error-banner" style={{ margin: '0 16px 10px' }}>
-          {parserHint || 'Portal data may have changed - pull to refresh or check academia.srmist.edu.in directly'}
+          {parserHint || 'Portal data may have changed — refresh or check academia.srmist.edu.in directly'}
         </div>
       )}
 
@@ -1793,26 +1775,6 @@ function AttendanceScreen({
             </div>
           </div>
           <div className="attendance-overview-side">
-            <div className="attendance-overview-actions" role="group" aria-label="Attendance insight tools">
-              <button
-                className={`attendance-action-pill${activeInsight === "planner" ? " active" : ""}`}
-                onClick={() => setActiveInsight("planner")}
-                aria-label="Open attendance risk and leave planner"
-                title="Attendance risk + leave planner"
-              >
-                <span className="attendance-action-icon"><Icons.Shield /></span>
-                Risk
-              </button>
-              <button
-                className={`attendance-action-pill${activeInsight === "marks" ? " active" : ""}`}
-                onClick={() => setActiveInsight("marks")}
-                aria-label="Open internal marks trend"
-                title={marksTrend.length > 0 ? `Internal marks trend · Average ${overallTrendAvg.toFixed(1)}%` : "Internal marks trend"}
-              >
-                <span className="attendance-action-icon"><Icons.Trend /></span>
-                Trend
-              </button>
-            </div>
             <div className="attendance-overview-meta">
               <div className="attendance-overview-meta-item">
                 <span>Courses</span>
@@ -1833,7 +1795,7 @@ function AttendanceScreen({
       </div>
       <div className="course-list">
         {attendance.filter(c => c.type === "Theory").map(c => (
-          <CourseRow key={c.code + c.title} course={c} marks={marksMap[c.code] ?? []} />
+          <CourseRow key={c.code + c.title} course={c} />
         ))}
       </div>
 
@@ -1842,9 +1804,10 @@ function AttendanceScreen({
       </div>
       <div className="course-list">
         {attendance.filter(c => c.type === "Practical").map(c => (
-          <CourseRow key={c.code + c.type} course={c} marks={marksMap[c.code] ?? []} />
+          <CourseRow key={c.code + c.type} course={c} />
         ))}
       </div>
+
       <div className="page-spacer" />
 
       {activeInsight === "planner" && (
@@ -1932,82 +1895,237 @@ function AttendanceScreen({
         </div>
       )}
 
-      {activeInsight === "marks" && (
-        <div className="sheet-backdrop insight-sheet-backdrop" onClick={() => setActiveInsight(null)}>
-          <div className="sheet-panel insight-sheet-panel" onClick={(e) => e.stopPropagation()}>
-            <div className="sheet-handle" />
-            <div className="sheet-title">Internal marks trend</div>
-            <div className="sheet-body">Read each course with first score, latest score, average and assessment-wise progression. The pass line is fixed at 50%, and the safe zone starts from that line.</div>
-            {marksTrend.length === 0 ? (
-              <div className="empty-state" style={{ margin: 0 }}>
-                <div className="empty-icon"><Icons.Calendar /></div>
-                Trend appears after internal marks are published
-              </div>
-            ) : (
-              <div className="marks-insight-list">
-                {marksTrend.map((row) => {
-                  const trendClass = row.delta > 1 ? 'up' : row.delta < -1 ? 'down' : 'flat'
-                  const trendLabel = trendClass === 'up' ? 'Improving' : trendClass === 'down' ? 'Needs attention' : 'Stable'
-                  return (
-                    <div key={row.courseCode} className="marks-insight-card">
-                      <div className="marks-insight-head">
-                        <div className="marks-insight-head-main">
-                          <div className="marks-insight-code">{row.courseCode}</div>
-                          <div className="marks-insight-title">{row.title}</div>
-                        </div>
-                        <span className={`marks-insight-trend ${trendClass}`}>
-                          {trendLabel} {row.delta >= 0 ? '+' : ''}{row.delta.toFixed(1)}%
-                        </span>
-                      </div>
-                      <div className="marks-insight-metrics">
-                        <div className="marks-insight-metric">
-                          <div className="marks-insight-metric-top">
-                            <span>Latest</span>
-                            <strong>{row.latest.toFixed(1)}%</strong>
-                          </div>
-                        </div>
-                        <div className="marks-insight-metric">
-                          <div className="marks-insight-metric-top">
-                            <span>Average</span>
-                            <strong>{row.avg.toFixed(1)}%</strong>
-                          </div>
-                        </div>
-                        <div className="marks-insight-metric">
-                          <div className="marks-insight-metric-top">
-                            <span>Best</span>
-                            <strong>{row.best.toFixed(1)}%</strong>
-                          </div>
-                        </div>
-                      </div>
-                      <Suspense fallback={<div className="marks-line-chart-shell marks-line-chart-skeleton" />}>
-                        <MarksLineChart tests={row.tests} />
-                      </Suspense>
-                      <div className="marks-insight-meta">
-                        Started at <strong>{row.first.toFixed(1)}%</strong> · Best <strong>{row.best.toFixed(1)}%</strong>
-                      </div>
-                      <div className="marks-insight-tests">
-                        {row.tests.map((test, idx) => (
-                          <span key={`${row.courseCode}-${idx}`} className={`marks-insight-test ${markClass(test.pct)}`}>
-                            {test.test}: {test.scored.toFixed(1)}/{test.max.toFixed(1)} ({test.pct.toFixed(1)}%)
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-            <div className="sheet-actions">
-              <button className="btn-sheet-cancel" onClick={() => setActiveInsight(null)}>Close</button>
-            </div>
-          </div>
-        </div>
-      )}
     </>
   )
 }
 
-function CourseRow({ course, marks }: { course: AttendanceCourse; marks: InternalMark[] }) {
+function MarksScreen({ attendance, marks }: { attendance: AttendanceCourse[]; marks: InternalMark[] }) {
+  const formatMarkValue = (value: number) => (Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1))
+
+    const renderMarksTooltip = (tooltipProps: any) => {
+      const { active, payload, label } = tooltipProps
+      if (!active || !payload || payload.length === 0) return null
+      const primary = payload.find((item: any) => item.dataKey === 'pct')
+        ?? payload.find((item: any) => item.dataKey === 'failPct')
+        ?? payload[0]
+      if (!primary) return null
+      const source = primary.payload
+      const pctRaw = typeof primary.value === 'number' ? primary.value : Number(primary.value ?? source?.pct ?? 0)
+      const pct = Number.isFinite(pctRaw) ? pctRaw : 0
+      const scored = source?.scored ?? 0
+      const max = source?.max ?? 0
+      return (
+        <div className="marks-tooltip">
+          <div className="marks-tooltip-label">{String(label ?? '')}</div>
+          <div className="marks-tooltip-value">
+            {formatMarkValue(scored)}/{formatMarkValue(max)} ({pct.toFixed(1)}%)
+          </div>
+          {pct < 50 && <div className="marks-tooltip-fail">Below pass threshold</div>}
+        </div>
+      )
+    }
+
+  const marksByCode = useMemo(() => {
+    const map: Record<string, InternalMark[]> = {}
+    for (const mk of marks) {
+      if (!map[mk.courseCode]) map[mk.courseCode] = []
+      map[mk.courseCode]!.push(mk)
+    }
+    Object.values(map).forEach((items) => items.sort(compareInternalMarks))
+    return map
+  }, [marks])
+
+  const courseRows = useMemo(() => {
+    return attendance.map((course) => {
+      const tests = (marksByCode[course.code] ?? []).map((entry) => {
+        const pct = entry.max > 0 ? (entry.scored / entry.max) * 100 : 0
+        return {
+          ...entry,
+          label: formatAssessmentLabel(entry.test),
+          pct,
+        }
+      })
+      const isLab = isPracticalCourse(course)
+      const scoredTotal = tests.reduce((sum, t) => sum + t.scored, 0)
+      const obtainedMax = tests.reduce((sum, t) => sum + t.max, 0)
+      const runningPct = obtainedMax > 0 ? (scoredTotal / obtainedMax) * 100 : 0
+      return {
+        course,
+        tests,
+        isLab,
+        scoredTotal,
+        obtainedMax,
+        runningPct,
+      }
+    })
+  }, [attendance, marksByCode])
+
+  const theoryRows = courseRows.filter((row) => !row.isLab)
+  const practicalRows = courseRows.filter((row) => row.isLab)
+  const totalScored = marks.reduce((sum, row) => sum + row.scored, 0)
+  const totalPossible = marks.reduce((sum, row) => sum + row.max, 0)
+
+  const marksByCourseCode: Record<string, { scored: number; max: number }> = {}
+  for (const mk of marks) {
+    if (!marksByCourseCode[mk.courseCode]) marksByCourseCode[mk.courseCode] = { scored: 0, max: 0 }
+    marksByCourseCode[mk.courseCode]!.scored += mk.scored
+    marksByCourseCode[mk.courseCode]!.max += mk.max
+  }
+  const enteredCourseCount = Object.keys(marksByCourseCode).length
+  const renderRow = (row: (typeof courseRows)[number]) => {
+    const hasFailComponent = row.tests.some((test) => test.pct < 50)
+    const chartColor = hasFailComponent ? 'var(--marks-danger-color)' : 'var(--marks-ok-color)'
+
+    return (
+    <div key={`${row.course.code}|${row.course.type}`} className="course-item">
+      <div className="course-item-top">
+        <div className="course-item-info">
+          <div className="course-item-code">
+            {row.course.code}{row.course.credit > 0 ? ` · ${row.course.credit} credits` : ''}
+          </div>
+          <div className="course-item-title">{shortCourseTitle(row.course.title)}</div>
+        </div>
+        <div className="marks-course-pct-wrap">
+          <div className={`marks-course-pct ${row.runningPct < 50 ? 'danger' : 'ok'}`}>
+            {row.tests.length > 0 ? `${formatMarkValue(row.scoredTotal)}/${formatMarkValue(row.obtainedMax)}` : '—'}
+          </div>
+          <div className="marks-course-pct-sub">Total Marks</div>
+        </div>
+      </div>
+
+      {row.tests.length === 0 ? (
+        <div className="marks-empty-line">No marks entered yet</div>
+      ) : (
+        <div className="marks-course-body">
+          <div className="marks-running-total">
+            <strong>Total written: {formatMarkValue(row.scoredTotal)} of {formatMarkValue(row.obtainedMax)}</strong>
+          </div>
+          {row.tests.length > 0 && (
+            <div className="marks-mini-chart">
+              <div className="marks-mini-chart-plot">
+                <ResponsiveContainer width="100%" height="100%">
+                <LineChart
+                  data={
+                    row.tests.length === 1
+                      ? [
+                        {
+                          label: `${row.tests[0]!.label} A`,
+                          pct: Number(row.tests[0]!.pct.toFixed(1)),
+                          failPct: row.tests[0]!.pct < 50 ? Number(row.tests[0]!.pct.toFixed(1)) : null,
+                          scored: Number(row.tests[0]!.scored.toFixed(1)),
+                          max: Number(row.tests[0]!.max.toFixed(1)),
+                        },
+                        {
+                          label: `${row.tests[0]!.label} B`,
+                          pct: Number(row.tests[0]!.pct.toFixed(1)),
+                          failPct: row.tests[0]!.pct < 50 ? Number(row.tests[0]!.pct.toFixed(1)) : null,
+                          scored: Number(row.tests[0]!.scored.toFixed(1)),
+                          max: Number(row.tests[0]!.max.toFixed(1)),
+                        },
+                      ]
+                      : row.tests.map((test) => ({
+                        label: test.label,
+                        pct: Number(test.pct.toFixed(1)),
+                        failPct: test.pct < 50 ? Number(test.pct.toFixed(1)) : null,
+                        scored: Number(test.scored.toFixed(1)),
+                        max: Number(test.max.toFixed(1)),
+                      }))
+                  }
+                  margin={{ top: 8, right: 6, left: 6, bottom: 6 }}
+                >
+                  <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--marks-chart-grid)" />
+                  <ReferenceLine y={50} stroke="var(--marks-danger-color)" strokeDasharray="4 4" strokeOpacity={0.8} />
+                  <YAxis hide domain={[0, 100]} />
+                  <Tooltip
+                    cursor={{ stroke: chartColor, strokeOpacity: 0.28, strokeWidth: 1.2 }}
+                    content={renderMarksTooltip}
+                  />
+                  <Line
+                    dataKey="pct"
+                    type="monotone"
+                    stroke={chartColor}
+                    strokeWidth={3.1}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    isAnimationActive
+                    animationDuration={760}
+                    animationEasing="ease-out"
+                    dot={{
+                      fill: 'var(--surface-card)',
+                      stroke: chartColor,
+                      strokeWidth: 1.8,
+                      r: 3.6,
+                    }}
+                    activeDot={{
+                      fill: 'var(--surface-card)',
+                      stroke: chartColor,
+                      strokeWidth: 2,
+                      r: 5,
+                    }}
+                  />
+                </LineChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="marks-mini-details" role="list" aria-label="Per-test marks details">
+                {row.tests.map((test, idx) => (
+                  <div
+                    key={`${row.course.code}-mini-${idx}`}
+                    className={`marks-mini-detail-chip ${test.pct < 50 ? 'fail' : 'ok'}`}
+                    role="listitem"
+                  >
+                    <span>{test.label}</span>
+                    <strong>{test.scored.toFixed(1)}/{test.max.toFixed(1)}</strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )}
+
+  return (
+    <>
+      <div className="attendance-overview-card marks-summary-card">
+        <div className="attendance-overview-top">
+          <div className="attendance-overview-main">
+            <div className="attendance-overview-kicker">Internal marks summary</div>
+            <div className="attendance-overview-pct">
+              {totalScored.toFixed(1)}/{totalPossible || 0}
+            </div>
+          </div>
+          <div className="attendance-overview-side">
+            <div className="attendance-overview-meta">
+              <div className="attendance-overview-meta-item">
+                <span>Entered</span>
+                <strong>{enteredCourseCount}</strong>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="section-header">
+        <span className="section-title">Theory</span>
+      </div>
+      <div className="course-list">
+        {theoryRows.map(renderRow)}
+      </div>
+
+      <div className="section-header">
+        <span className="section-title">Practical</span>
+      </div>
+      <div className="course-list">
+        {practicalRows.map(renderRow)}
+      </div>
+
+      <div className="page-spacer" />
+    </>
+  )
+}
+
+function CourseRow({ course }: { course: AttendanceCourse }) {
   const cls = attnClass(course.percent)
   const need = classesNeededToReach(course.conducted, course.absent)
   const safe = classesSafeToMiss(course.conducted, course.absent)
@@ -2048,29 +2166,16 @@ function CourseRow({ course, marks }: { course: AttendanceCourse; marks: Interna
         <span className="attn-guidance-label">{guidanceLabel}</span>
         <span className="attn-guidance-value">{guidanceValue}</span>
       </div>
-      {marks.length > 0 && (
-        <div className="marks-list">
-          {marks.map((m, idx) => {
-            const pct = m.max > 0 ? (m.scored / m.max) * 100 : 0
-            const mCls = markClass(pct)
-            return (
-              <div key={`${m.test}-${m.max}-${idx}`} className="mark-row">
-                <span className="mark-test-label">{formatAssessmentLabel(m.test)}: {m.scored.toFixed(1)}/{m.max.toFixed(1)}</span>
-                <span className={`mark-pct-chip ${mCls}`}>{pct.toFixed(0)}%</span>
-              </div>
-            )
-          })}
-        </div>
-      )}
     </div>
   )
 }
 
 // ─── Schedule ──────────────────────────────────────────────────────────────────
-function ScheduleScreen({ initialDay, attendance, timetableByDay }: {
+function ScheduleScreen({ initialDay, attendance, timetableByDay, onOpenCalendar }: {
   initialDay: number | null
   attendance: AttendanceCourse[]
   timetableByDay: TimetableByDay
+  onOpenCalendar: () => void
 }) {
   const [manualSelectedDay, setManualSelectedDay] = useState<number | null>(null)
   const selectedDay = manualSelectedDay ?? initialDay ?? 1
@@ -2082,6 +2187,7 @@ function ScheduleScreen({ initialDay, attendance, timetableByDay }: {
     <>
       <div className="section-header" style={{ paddingBottom: 12 }}>
         <span className="section-title">Timetable · AY 2025-26</span>
+        <button className="calendar-launch-btn" onClick={onOpenCalendar}>Open Calendar</button>
       </div>
       <div className="day-tab-bar">
         {[1, 2, 3, 4, 5].map(d => (
@@ -2384,6 +2490,9 @@ function MessScreen() {
   const todayDate = useMemo(() => new Date(nowTs), [nowTs])
   const todayDay = getDayKeyFromDate(todayDate)
   const [selectedDay, setSelectedDay] = useState<MessDayKey>(() => getDayKeyFromDate(new Date()))
+  const [activeStickerAnimations, setActiveStickerAnimations] = useState<Record<string, boolean>>({})
+  const [clickedStickerState, setClickedStickerState] = useState<Record<string, boolean>>({})
+  const [specialFruitByKey, setSpecialFruitByKey] = useState<Record<string, string>>({})
 
   const dayType = useMemo(() => {
     const dayIndex = DAY_KEYS.indexOf(selectedDay)
@@ -2401,6 +2510,54 @@ function MessScreen() {
       .replace(/\s+/g, ' ')
       .trim()
   }, [])
+
+  const getMessSticker = useCallback((itemText: string): { emoji: string; tone: 'egg' | 'chicken' | 'icecream' | 'mystery' } | null => {
+    const normalized = itemText.toLowerCase()
+    if (normalized.includes('special fruit')) return { emoji: '❓', tone: 'mystery' }
+    if (normalized.includes('ice cream')) return { emoji: '🍨', tone: 'icecream' }
+    if (normalized.includes('chicken')) return { emoji: '🍗', tone: 'chicken' }
+    if (normalized.includes('egg')) return { emoji: '🥚', tone: 'egg' }
+    return null
+  }, [])
+
+  const triggerStickerAnimation = useCallback((stickerKey: string, tone: 'egg' | 'chicken' | 'icecream' | 'mystery') => {
+    setClickedStickerState((prev) => ({ ...prev, [stickerKey]: true }))
+    if (tone === 'mystery') {
+      setSpecialFruitByKey((prev) => {
+        const nextEmoji = SPECIAL_FRUIT_SURPRISES[Math.floor(Math.random() * SPECIAL_FRUIT_SURPRISES.length)]
+        return { ...prev, [stickerKey]: nextEmoji }
+      })
+    }
+    setActiveStickerAnimations((prev) => ({ ...prev, [stickerKey]: false }))
+    requestAnimationFrame(() => {
+      setActiveStickerAnimations((prev) => ({ ...prev, [stickerKey]: true }))
+    })
+  }, [])
+
+  const clearStickerAnimation = useCallback((stickerKey: string) => {
+    setActiveStickerAnimations((prev) => {
+      if (!prev[stickerKey]) return prev
+      return { ...prev, [stickerKey]: false }
+    })
+  }, [])
+
+  const getStickerEmoji = useCallback((
+    tone: 'egg' | 'chicken' | 'icecream' | 'mystery',
+    stickerKey: string,
+    wasClicked: boolean,
+  ): string => {
+    if (!wasClicked) {
+      if (tone === 'egg') return '🥚'
+      if (tone === 'chicken') return '🍗'
+      if (tone === 'icecream') return '🍨'
+      return '❓'
+    }
+
+    if (tone === 'egg') return '🐣'
+    if (tone === 'chicken') return '🍖'
+    if (tone === 'icecream') return '👅'
+    return specialFruitByKey[stickerKey] ?? '✨'
+  }, [specialFruitByKey])
 
   return (
     <>
@@ -2448,8 +2605,12 @@ function MessScreen() {
               </div>
 
               <div className="mess-items-wrap">
-                {ordered.map((entry) => {
+                {ordered.map((entry, index) => {
                   const isNonVeg = isNonVegItem(entry.text)
+                  const sticker = getMessSticker(entry.text)
+                  const stickerKey = `${mealKey}-${index}-${entry.text.toLowerCase()}`
+                  const isStickerAnimating = Boolean(activeStickerAnimations[stickerKey])
+                  const wasStickerClicked = Boolean(clickedStickerState[stickerKey])
                   return (
                     <span
                       key={`${mealKey}-${entry.text}`}
@@ -2457,6 +2618,25 @@ function MessScreen() {
                     >
                       {isNonVeg && <span className="mess-item-dot" aria-hidden="true" />}
                       {entry.text}
+                      {sticker && (
+                        <span
+                          className={`mess-item-sticker ${sticker.tone}${wasStickerClicked && sticker.tone === 'mystery' ? ' surprise' : ''}${isStickerAnimating ? ' animate' : ''}`}
+                          role="button"
+                          tabIndex={0}
+                          aria-label={`Animate ${entry.text}`}
+                          title={`Animate ${entry.text}`}
+                          onClick={() => triggerStickerAnimation(stickerKey, sticker.tone)}
+                          onAnimationEnd={() => clearStickerAnimation(stickerKey)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault()
+                              triggerStickerAnimation(stickerKey, sticker.tone)
+                            }
+                          }}
+                        >
+                          {getStickerEmoji(sticker.tone, stickerKey, wasStickerClicked) || sticker.emoji}
+                        </span>
+                      )}
                     </span>
                   )
                 })}
@@ -2475,24 +2655,43 @@ function MessScreen() {
 function CookingScreen({ onBack }: { onBack: () => void }) {
   return (
     <div className="cooking-screen">
-      <ProgressiveBlur
-        className="cooking-progressive-blur cooking-progressive-blur-bottom"
-        position="bottom"
-        backgroundColor="#000000"
-        height="92px"
-        blurAmount="2px"
-      />
-
+      <button className="cooking-floating-back" onClick={onBack} aria-label="Back to profile">
+        <Icons.ChevronLeft />
+        Profile
+      </button>
+      <div className="cooking-grainient-bg" aria-hidden="true">
+        <Grainient
+          color1="#FF9FFC"
+          color2="#5227FF"
+          color3="#B19EEF"
+          timeSpeed={0.25}
+          colorBalance={0}
+          warpStrength={1}
+          warpFrequency={5}
+          warpSpeed={2}
+          warpAmplitude={50}
+          blendAngle={0}
+          blendSoftness={0.05}
+          rotationAmount={500}
+          noiseScale={2}
+          grainAmount={0.1}
+          grainScale={2}
+          grainAnimated={false}
+          contrast={1.5}
+          gamma={1}
+          saturation={1}
+          centerX={0}
+          centerY={0}
+          zoom={0.9}
+        />
+      </div>
+      <div className="cooking-grainient-vignette" aria-hidden="true" />
       <div className="cooking-scroll">
-        <div className="cooking-header">
-          <button className="cooking-back-btn" onClick={onBack}>
-            <Icons.ChevronLeft />
-            Back
-          </button>
-          <div className="cooking-title">Cooking</div>
-          <div className="cooking-current">{CURRENT_APP_VERSION}</div>
+        <div className="cooking-hero">
+          <div className="cooking-hero-kicker">Arch Release Notes</div>
+          <div className="cooking-hero-title">What changed, quickly.</div>
+          <div className="cooking-subtitle">Concise updates optimized for mobile scanning.</div>
         </div>
-        <div className="cooking-subtitle">Latest updates in one place.</div>
 
         <div className="cooking-list">
           {CHANGELOG_ENTRIES.map((entry, idx) => (
@@ -2526,6 +2725,18 @@ function CookingScreen({ onBack }: { onBack: () => void }) {
         </div>
         <div className="page-spacer" />
       </div>
+
+      <GradualBlur
+        className="cooking-gradual-blur"
+        target="page"
+        position="bottom"
+        height="6.5rem"
+        strength={1.05}
+        divCount={4}
+        curve="ease-out"
+        exponential
+        opacity={0.52}
+      />
     </div>
   )
 }
@@ -2560,6 +2771,34 @@ export default function App() {
   const [loggedIn, setLoggedIn] = useState(() => !!getSessionToken())
   const [loggedEmail, setLoggedEmail] = useState(() => bootEmail)
   const [screen, setScreen] = useState<Screen>("home")
+  const [globalQuickMenuOpen, setGlobalQuickMenuOpen] = useState(false)
+  const [dockDropActive, setDockDropActive] = useState(false)
+  const [menuDropActive, setMenuDropActive] = useState(false)
+  const [dockInsertIndex, setDockInsertIndex] = useState<number | null>(null)
+  const [menuHasScroll, setMenuHasScroll] = useState(false)
+  const [menuLiquidActive, setMenuLiquidActive] = useState(false)
+  const [draggingFloatingTab, setDraggingFloatingTab] = useState<Screen | null>(null)
+  const [dockedFloatingTabs, setDockedFloatingTabs] = useState<Screen[]>(() => {
+    try {
+      const layoutRaw = localStorage.getItem(FLOATING_LAYOUT_STORAGE_KEY)
+      if (layoutRaw) {
+        const parsedLayout = normalizeFloatingDockLayout(JSON.parse(layoutRaw) as unknown)
+        if (parsedLayout.length > 0) return parsedLayout
+      }
+      const legacyQuickRaw = localStorage.getItem(QUICK_DOCK_STORAGE_KEY)
+      const legacyQuick = legacyQuickRaw ? normalizeFloatingDockLayout(JSON.parse(legacyQuickRaw) as unknown) : []
+      const migrated = [...FLOATING_DOCK_DEFAULT_ORDER]
+      if (legacyQuick.includes('marks')) migrated.push('marks')
+      if (legacyQuick.includes('mess')) migrated.push('mess')
+      return migrated
+    } catch {
+      return [...FLOATING_DOCK_DEFAULT_ORDER]
+    }
+  })
+  const globalQuickMenuRef = useRef<HTMLDivElement | null>(null)
+  const globalQuickMenuPanelRef = useRef<HTMLDivElement | null>(null)
+  const menuLiquidResetTimeoutRef = useRef<number | null>(null)
+  const dragCleanupTimeoutRef = useRef<number | null>(null)
   const [student, setStudent] = useState<StudentInfo>(() => {
     if (!bootEmail) return EMPTY_STUDENT
     const saved = localStorage.getItem(`academia.student.${bootEmail}`)
@@ -2583,8 +2822,8 @@ export default function App() {
   const [calendarError, setCalendarError] = useState('')
   const [attendanceParserStatus, setAttendanceParserStatus] = useState<'ok' | 'structure_mismatch'>('ok')
   const [attendanceParserHint, setAttendanceParserHint] = useState('')
-  const [isOffline, setIsOffline] = useState(!navigator.onLine)
-  const [needUpdate, setNeedUpdate] = useState(false)
+  const [isOffline] = useState(!navigator.onLine)
+  const [needUpdate] = useState(false)
   const [timetableByDay, setTimetableByDay] = useState<TimetableByDay>(() => {
     if (bootCache?.timetableByDay) return bootCache.timetableByDay
     return fallbackTimetableForBatch(bootStudentBatch)
@@ -2618,6 +2857,56 @@ export default function App() {
   useEffect(() => {
     cleanupStaleLocalEntries(loggedEmail || bootEmail || null)
   }, [loggedEmail, bootEmail])
+
+  useEffect(() => {
+    if (!globalQuickMenuOpen) return
+    const handleOutsideClick = (event: MouseEvent) => {
+      if (!globalQuickMenuRef.current) return
+      if (!globalQuickMenuRef.current.contains(event.target as Node)) {
+        setGlobalQuickMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleOutsideClick)
+    return () => document.removeEventListener('mousedown', handleOutsideClick)
+  }, [globalQuickMenuOpen])
+
+  useEffect(() => {
+    localStorage.setItem(FLOATING_LAYOUT_STORAGE_KEY, JSON.stringify(dockedFloatingTabs))
+    const legacyQuickTabs = dockedFloatingTabs.filter((tab) => tab === 'marks' || tab === 'mess')
+    localStorage.setItem(QUICK_DOCK_STORAGE_KEY, JSON.stringify(legacyQuickTabs))
+  }, [dockedFloatingTabs])
+
+  useEffect(() => {
+    return () => {
+      if (menuLiquidResetTimeoutRef.current !== null) {
+        window.clearTimeout(menuLiquidResetTimeoutRef.current)
+      }
+      if (dragCleanupTimeoutRef.current !== null) {
+        window.clearTimeout(dragCleanupTimeoutRef.current)
+      }
+    }
+  }, [])
+
+  const triggerMenuLiquidEffect = useCallback(() => {
+    setMenuLiquidActive(true)
+    if (menuLiquidResetTimeoutRef.current !== null) {
+      window.clearTimeout(menuLiquidResetTimeoutRef.current)
+    }
+    menuLiquidResetTimeoutRef.current = window.setTimeout(() => {
+      setMenuLiquidActive(false)
+      menuLiquidResetTimeoutRef.current = null
+    }, 360)
+  }, [])
+
+  useEffect(() => {
+    if (!globalQuickMenuOpen) {
+      setMenuHasScroll(false)
+      setMenuLiquidActive(false)
+      return
+    }
+    const panel = globalQuickMenuPanelRef.current
+    setMenuHasScroll((panel?.scrollTop ?? 0) > 1)
+  }, [globalQuickMenuOpen, dockedFloatingTabs])
 
   useEffect(() => {
     attendanceSnapshotRef.current = null
@@ -2772,100 +3061,20 @@ export default function App() {
       new Notification(title, options)
     }
 
-    const primaryUpdates = updates.slice(0, 3)
-    await Promise.all(primaryUpdates.map((update, idx) => {
-      const statusLabel = update.status === 'present' ? 'Present' : update.status === 'absent' ? 'Absent' : 'Updated'
-      const body =
-        update.status === 'present'
-          ? `${update.title} (${update.courseLabel}) is now marked PRESENT.`
-          : update.status === 'absent'
-            ? `${update.title} (${update.courseLabel}) is now marked ABSENT.`
-            : `${update.title} (${update.courseLabel}) attendance was updated.`
-      return notify(`Attendance: ${statusLabel}`, body, `arch-attendance-${update.courseLabel}-${Date.now()}-${idx}`)
-    }))
-
-    if (updates.length > primaryUpdates.length) {
-      const extra = updates.length - primaryUpdates.length
-      await notify('Attendance updates', `${extra} more subject update${extra === 1 ? '' : 's'} received.`, `arch-attendance-summary-${Date.now()}`)
+    for (const update of updates) {
+      const statusText = update.status === 'present'
+        ? 'Marked present'
+        : update.status === 'absent'
+          ? 'Marked absent'
+          : 'Attendance updated'
+      await notify(
+        `Attendance update · ${update.courseLabel}`,
+        `${update.title} · ${statusText}`,
+        `attendance-update-${update.courseLabel}`,
+      )
     }
   }, [])
 
-  // Android/Chrome install prompt
-  useEffect(() => {
-    const h = (e: Event) => {
-      e.preventDefault()
-      setInstallPrompt(e as BeforeInstallPromptEvent)
-      setShowPwa(true)
-    }
-    window.addEventListener("beforeinstallprompt", h)
-    return () => window.removeEventListener("beforeinstallprompt", h)
-  }, [])
-
-  // iOS Safari: show "Add to Home Screen" guidance if not already installed
-  useEffect(() => {
-    const ua = navigator.userAgent
-    const isIos = /iphone|ipad|ipod/i.test(ua) && /safari/i.test(ua) && !/chrome|crios|fxios/i.test(ua)
-    const isStandalone = window.matchMedia("(display-mode: standalone)").matches || (navigator as { standalone?: boolean }).standalone === true
-    if (isIos && !isStandalone && !localStorage.getItem("ios-pwa-ok")) {
-      setShowIosPwa(true)
-    }
-  }, [])
-
-  // SW registration + update notification
-  useEffect(() => {
-    if (!('serviceWorker' in navigator)) return
-    if (import.meta.env.DEV) {
-      navigator.serviceWorker.getRegistrations().then((regs) => {
-        regs.forEach((reg) => { void reg.unregister() })
-      }).catch(() => {})
-      if ('caches' in window) {
-        caches.keys().then((keys) => {
-          keys.forEach((key) => { void caches.delete(key) })
-        }).catch(() => {})
-      }
-      return
-    }
-    import("virtual:pwa-register")
-      .then(({ registerSW }) => {
-        registerSW({
-          onNeedRefresh() { setNeedUpdate(true) },
-          onOfflineReady() {},
-        })
-      })
-      .catch(() => {
-        // Dev fallback if virtual module isn't served
-        if (import.meta.env.PROD) {
-          navigator.serviceWorker.register('/sw.js').catch(() => {})
-        }
-      })
-  }, [])
-
-  // Offline / online detection
-  useEffect(() => {
-    const goOnline = () => setIsOffline(false)
-    const goOffline = () => setIsOffline(true)
-    window.addEventListener('online', goOnline)
-    window.addEventListener('offline', goOffline)
-    return () => {
-      window.removeEventListener('online', goOnline)
-      window.removeEventListener('offline', goOffline)
-    }
-  }, [])
-
-  // Session validation — verify server-side session alive on app start
-  useEffect(() => {
-    if (!loggedIn) return
-    validateSession().then(({ valid, reason }) => {
-      if (!valid) {
-        console.warn('[auth] Session validation failed', reason ?? 'unknown')
-        handleLogout()
-      }
-      else refreshSessionSnapshot()
-    }).catch(() => {}) // network error = offline, keep session
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loggedIn])
-
-  // Profile hydration: timetable + address data (low-frequency; not high-priority polling)
   const hydrateProfile = useCallback(async () => {
     if (!loggedIn) return
     const [ttResult, addrResult] = await Promise.allSettled([
@@ -2889,9 +3098,7 @@ export default function App() {
     const addressPatch = addrResult.status === 'fulfilled' ? addrResult.value : {}
     if (!hasStudentPatchData(timetablePatch) && !hasStudentPatchData(addressPatch)) return
 
-    // Keep timetable values when address payload contains blank fields.
     const mergedPatch = mergeStudent(mergeStudent(EMPTY_STUDENT, timetablePatch), addressPatch)
-
     const next = mergeStudent(studentRef.current, mergedPatch)
     setStudent(next)
     const email = loggedEmailRef.current
@@ -3237,14 +3444,96 @@ export default function App() {
     }} />
   )
 
-  const navTabs = [
-    { key: "home"       as const, title: "Home",       icon: Home },
-    { key: "attendance" as const, title: "Attendance", icon: BarChart2 },
-    { key: "schedule"   as const, title: "Timetable",  icon: Clock3 },
-    { key: "calendar"   as const, title: "Calendar",   icon: CalendarDays },
-    { key: "mess"       as const, title: "Mess",       icon: UtensilsCrossed },
-    { key: "profile"    as const, title: "Profile",    icon: User, badgeCount: notificationCount },
+  const floatingTabItems = [
+    { key: 'home' as const, title: 'Home', icon: Home },
+    { key: 'attendance' as const, title: 'Attendance', icon: BarChart2 },
+    { key: 'schedule' as const, title: 'Timetable', icon: Clock3 },
+    { key: 'calendar' as const, title: 'Calendar', icon: CalendarDays },
+    { key: 'marks' as const, title: 'Marks', icon: TrendingUp },
+    { key: 'mess' as const, title: 'Mess', icon: UtensilsCrossed },
+    { key: 'profile' as const, title: 'Profile', icon: User, badgeCount: notificationCount },
   ]
+
+  const navTabs = dockedFloatingTabs
+    .map((key) => floatingTabItems.find((tab) => tab.key === key))
+    .filter((tab): tab is (typeof floatingTabItems)[number] => !!tab)
+  const menuFloatingItems = FLOATING_TAB_ORDER
+    .map((key) => floatingTabItems.find((tab) => tab.key === key))
+    .filter((tab): tab is (typeof floatingTabItems)[number] => !!tab)
+    .filter((tab) => !dockedFloatingTabs.includes(tab.key))
+  const dockOrderWithoutDragged = draggingFloatingTab
+    ? dockedFloatingTabs.filter((key) => key !== draggingFloatingTab)
+    : dockedFloatingTabs
+
+  const commitDropToDock = (draggedTab: Screen, insertIndex?: number) => {
+    const next = dockedFloatingTabs.filter((key) => key !== draggedTab)
+    const safeIndex = Math.max(0, Math.min(insertIndex ?? next.length, next.length))
+    next.splice(safeIndex, 0, draggedTab)
+    setDockedFloatingTabs(next)
+  }
+
+  const startFloatingDrag = (tabKey: string, origin: 'dock' | 'menu', event: React.DragEvent<HTMLElement>) => {
+    if (!FLOATING_TAB_KEYS.has(tabKey as Screen)) return
+    if (dragCleanupTimeoutRef.current !== null) {
+      window.clearTimeout(dragCleanupTimeoutRef.current)
+      dragCleanupTimeoutRef.current = null
+    }
+    const casted = tabKey as Screen
+    event.dataTransfer.setData('text/arch-dock-tab', casted)
+    event.dataTransfer.setData('text/plain', casted)
+    event.dataTransfer.effectAllowed = 'move'
+    setDraggingFloatingTab(casted)
+    setMenuDropActive(origin === 'dock')
+    setDockDropActive(true)
+    setDockInsertIndex(Math.max(0, dockOrderWithoutDragged.length))
+    setGlobalQuickMenuOpen(true)
+  }
+
+  const clearFloatingDragState = () => {
+    if (dragCleanupTimeoutRef.current !== null) {
+      window.clearTimeout(dragCleanupTimeoutRef.current)
+      dragCleanupTimeoutRef.current = null
+    }
+    setDraggingFloatingTab(null)
+    setDockDropActive(false)
+    setMenuDropActive(false)
+    setDockInsertIndex(null)
+  }
+
+  const scheduleClearFloatingDragState = () => {
+    if (dragCleanupTimeoutRef.current !== null) {
+      window.clearTimeout(dragCleanupTimeoutRef.current)
+    }
+    dragCleanupTimeoutRef.current = window.setTimeout(() => {
+      clearFloatingDragState()
+      dragCleanupTimeoutRef.current = null
+    }, 16)
+  }
+
+  const resolveDraggedTab = (event?: React.DragEvent<HTMLElement>) => {
+    if (draggingFloatingTab && FLOATING_TAB_KEYS.has(draggingFloatingTab)) return draggingFloatingTab
+    if (!event) return null
+    const fromCustom = event.dataTransfer.getData('text/arch-dock-tab')
+    if (fromCustom && FLOATING_TAB_KEYS.has(fromCustom as Screen)) return fromCustom as Screen
+    const fromText = event.dataTransfer.getData('text/plain')
+    if (fromText && FLOATING_TAB_KEYS.has(fromText as Screen)) return fromText as Screen
+    return null
+  }
+
+  const handleDockItemDragOver = (overKey: string, event: React.DragEvent<HTMLButtonElement>) => {
+    if (!draggingFloatingTab) return
+    const withoutDragged = dockedFloatingTabs.filter((key) => key !== draggingFloatingTab)
+    const overIndex = withoutDragged.indexOf(overKey as Screen)
+    if (overIndex < 0) return
+    event.stopPropagation()
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
+    const rect = event.currentTarget.getBoundingClientRect()
+    const insertBefore = event.clientX < rect.left + (rect.width / 2)
+    setDockInsertIndex(insertBefore ? overIndex : overIndex + 1)
+    setDockDropActive(true)
+  }
+
   const fallbackName = loggedEmail.split('@')[0] || 'Student'
   const installName = toTitle(firstName(student.name || loggedEmail.split('@')[0] || 'Student'))
 
@@ -3316,12 +3605,12 @@ export default function App() {
             onDayOrderChange={setDayOrder}
             lastUpdated={lastUpdated}
             dataLoading={loggedIn && attendance.length === 0 && lastUpdated === null}
+            onOpenCooking={() => setScreen('cooking')}
           />
         )}
         {screen === "attendance" && (
           <AttendanceScreen
             attendance={attendance}
-            marks={marks}
             parserStatus={attendanceParserStatus}
             parserHint={attendanceParserHint}
           />
@@ -3332,9 +3621,18 @@ export default function App() {
             initialDay={dayOrder}
             attendance={attendance}
             timetableByDay={timetableByDay}
+            onOpenCalendar={() => setScreen('calendar')}
           />
         )}
-        {screen === "calendar" && <CalendarScreen events={calendarEvents} loading={calendarLoading} error={calendarError} onDayOrderSync={setDayOrder} />}
+        {screen === "calendar" && (
+          <CalendarScreen
+            events={calendarEvents}
+            loading={calendarLoading}
+            error={calendarError}
+            onDayOrderSync={setDayOrder}
+          />
+        )}
+        {screen === "marks" && <MarksScreen attendance={attendance} marks={marks} />}
         {screen === "mess" && <MessScreen />}
         {screen === "profile" && (
           <ProfileScreen
@@ -3359,8 +3657,134 @@ export default function App() {
       {screen !== 'cooking' && (
         <ExpandableNav
           tabs={navTabs}
+          draggableTabKeys={dockedFloatingTabs}
+          dockPlaceholderIndex={dockDropActive ? (dockInsertIndex ?? dockOrderWithoutDragged.length) : null}
           activeKey={screen}
-          onSelect={(key) => setScreen(key as Screen)}
+          onTabDragStart={(key, event) => {
+            startFloatingDrag(key, 'dock', event)
+          }}
+          onTabDragOver={(key, event) => {
+            handleDockItemDragOver(key, event)
+          }}
+          onTabDragEnd={() => {
+            scheduleClearFloatingDragState()
+          }}
+          onSelect={(key) => {
+            setGlobalQuickMenuOpen(false)
+            setScreen(key as Screen)
+          }}
+          dockDropActive={dockDropActive}
+          onDockDragOver={(event) => {
+            const dragged = resolveDraggedTab(event)
+            if (dragged) {
+              if (!draggingFloatingTab) setDraggingFloatingTab(dragged)
+              event.preventDefault()
+              event.dataTransfer.dropEffect = 'move'
+              if (event.target === event.currentTarget) {
+                const withoutDragged = dockedFloatingTabs.filter((key) => key !== dragged)
+                setDockInsertIndex(withoutDragged.length)
+              }
+              setDockDropActive(true)
+            }
+          }}
+          onDockDrop={(event) => {
+            const dragged = resolveDraggedTab(event)
+            if (!dragged) return
+            event.preventDefault()
+            if (!draggingFloatingTab) setDraggingFloatingTab(dragged)
+            const withoutDragged = dockedFloatingTabs.filter((key) => key !== dragged)
+            commitDropToDock(dragged, dockInsertIndex ?? withoutDragged.length)
+            setGlobalQuickMenuOpen(false)
+            clearFloatingDragState()
+          }}
+          trailing={(
+            <div ref={globalQuickMenuRef} className={`global-smooth-menu${globalQuickMenuOpen ? ' open' : ''}`}>
+              <button
+                className="global-smooth-trigger"
+                onClick={() => setGlobalQuickMenuOpen((prev) => !prev)}
+                aria-label="Open quick tabs menu"
+              >
+                <span className="global-smooth-trigger-dots">•••</span>
+              </button>
+              <div
+                ref={globalQuickMenuPanelRef}
+                className={`global-smooth-panel${menuDropActive ? ' menu-drop-active' : ''}${menuHasScroll ? ' menu-has-scroll' : ''}${menuLiquidActive ? ' menu-liquid-active' : ''}`}
+                onWheel={() => {
+                  triggerMenuLiquidEffect()
+                }}
+                onTouchMove={() => {
+                  triggerMenuLiquidEffect()
+                }}
+                onScroll={(event) => {
+                  setMenuHasScroll(event.currentTarget.scrollTop > 1)
+                  triggerMenuLiquidEffect()
+                }}
+                onDragOver={(event) => {
+                  const dragged = resolveDraggedTab(event)
+                  if (!dragged) return
+                  event.preventDefault()
+                  event.dataTransfer.dropEffect = 'move'
+                  if (dockedFloatingTabs.includes(dragged)) {
+                    event.stopPropagation()
+                    if (!draggingFloatingTab) setDraggingFloatingTab(dragged)
+                    setMenuDropActive(true)
+                    triggerMenuLiquidEffect()
+                  }
+                }}
+                onDragLeave={(event) => {
+                  const panelRect = event.currentTarget.getBoundingClientRect()
+                  const stillInsidePanel =
+                    event.clientX >= panelRect.left &&
+                    event.clientX <= panelRect.right &&
+                    event.clientY >= panelRect.top &&
+                    event.clientY <= panelRect.bottom
+                  if (!stillInsidePanel) {
+                    setMenuDropActive(false)
+                  }
+                }}
+                onDrop={(event) => {
+                  const dragged = resolveDraggedTab(event)
+                  if (dragged && dockedFloatingTabs.includes(dragged)) {
+                    event.stopPropagation()
+                    event.preventDefault()
+                    setDockedFloatingTabs((prev) => prev.filter((tab) => tab !== dragged))
+                    setGlobalQuickMenuOpen(true)
+                    triggerMenuLiquidEffect()
+                  }
+                  clearFloatingDragState()
+                }}
+              >
+                {menuFloatingItems.length === 0 ? (
+                  <div className="global-smooth-empty">All tabs are in the dock</div>
+                ) : menuFloatingItems.map((item) => {
+                  const Icon = item.icon
+                  const isDragging = draggingFloatingTab === item.key
+                  return (
+                    <div key={item.key} className="global-smooth-item-wrap">
+                      <button
+                        draggable
+                        className={`global-smooth-item${isDragging ? ' dragging' : ''}`}
+                        onDragStart={(event) => {
+                          startFloatingDrag(item.key, 'menu', event)
+                          setMenuDropActive(true)
+                        }}
+                        onDragEnd={() => {
+                          scheduleClearFloatingDragState()
+                        }}
+                        onClick={() => {
+                          setGlobalQuickMenuOpen(false)
+                          setScreen(item.key as Screen)
+                        }}
+                      >
+                        <span className="global-smooth-item-icon"><Icon size={16} strokeWidth={2.2} /></span>
+                        <span>{item.title}</span>
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
         />
       )}
     </div>

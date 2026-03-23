@@ -50,7 +50,7 @@ let lastLoginAttemptAt = null
 let lastLoginSuccessAt = null
 
 const TRANSIENT_REASONS = ['timeout', 'network_error', 'econnreset']
-const DEFINITIVE_REASONS = ['user_not_found', 'invalid_password', 'csrf_extract_failed']
+const DEFINITIVE_REASONS = ['user_not_found', 'invalid_password', 'csrf_extract_failed', 'user_id_extraction_failed']
 
 const UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
 
@@ -532,9 +532,9 @@ async function pushDesignStatusPayload(email) {
 
 // POST /auth/login — authenticate with Zoho, return sessionToken
 app.post('/auth/login', async (req, res) => {
+  lastLoginAttemptAt = new Date().toISOString()
   const { email, password, trusted = false } = req.body || {}
   const normalizedEmail = normalizeIdentity(email)
-  lastLoginAttemptAt = new Date().toISOString()
   if (!email || !password) {
     recordAuthEvent('login_rejected', {
       reason: 'missing_credentials',
@@ -783,14 +783,13 @@ app.post('/auth/login', async (req, res) => {
       lastSeenAt: now,
       expiresAt: now + ttl,
     })
-    lastLoginSuccessAt = new Date().toISOString()
-
     recordAuthEvent('login_success', {
       reason: 'authenticated',
       email: normalizedEmail,
       trusted: Boolean(trusted),
       ip: clientIp(req),
     })
+    lastLoginSuccessAt = new Date().toISOString()
     res.json({ success: true, sessionToken, trusted: Boolean(trusted), expiresAt: now + ttl })
   } catch (err) {
     console.error('Login error:', err.message)
@@ -1102,15 +1101,14 @@ app.get('/auth/health', async (req, res) => {
 })
 
 app.get('/health/parser', (req, res) => {
-  const checks = {
-    srmGradesLoaded: true,
+  res.json({
+    ok: true,
     sessionStoreOk: sessions instanceof Map,
     nodeVersion: process.version,
-    uptime: `${Math.floor(process.uptime())}s`,
-    lastLoginAttempt: lastLoginAttemptAt ?? 'none',
-    lastLoginSuccess: lastLoginSuccessAt ?? 'none',
-  }
-  res.json({ ok: true, checks, ts: Date.now() })
+    uptime: Math.floor(process.uptime()),
+    lastLoginAttempt: lastLoginAttemptAt,
+    lastLoginSuccess: lastLoginSuccessAt,
+  })
 })
 
 function sweepExpiredInMemorySessions() {

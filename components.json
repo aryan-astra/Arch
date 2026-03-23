@@ -9,6 +9,7 @@
     "baseColor": "neutral",
     "cssVariables": true
   },
+  "iconLibrary": "lucide",
   "aliases": {
     "components": "@/components",
     "utils": "@/lib/utils",
@@ -17,6 +18,7 @@
     "hooks": "@/hooks"
   },
   "registries": {
-    "@spell": "https://spell.sh/r/{name}.json"
+    "@spell": "https://spell.sh/r/{name}.json",
+    "@react-bits": "https://reactbits.dev/r/{name}.json"
   }
 }
