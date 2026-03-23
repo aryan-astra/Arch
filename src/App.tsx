@@ -126,6 +126,7 @@ const LATEST_CHANGELOG_INDEX = CHANGELOG_ENTRIES.length > 0
   )
   : -1
 const CURRENT_APP_VERSION = CHANGELOG_ENTRIES[LATEST_CHANGELOG_INDEX]?.version ?? 'v1.0.0'
+const APP_RUNTIME_VERSION_KEY = 'arch.runtime.version'
 const SPECIAL_FRUIT_SURPRISES = ['✨', '🍉', '🍍', '🥭', '🍓'] as const
 const QUICK_DOCK_STORAGE_KEY = 'arch.quickDockTabs.v1'
 const FLOATING_LAYOUT_STORAGE_KEY = 'arch.floatingDockLayout.v1'
@@ -1499,7 +1500,7 @@ function HomeScreen({ student, fallbackName, attendance, timetableByDay, refresh
               aria-label="Open changelog"
               title="Open changelog"
             >
-              <AnimatedShinyText className="welcome-version-text" shimmerWidth={84}>
+              <AnimatedShinyText className="welcome-version-text" shimmerWidth={240}>
                 {homeVersionLabel}
               </AnimatedShinyText>
             </button>
@@ -2857,6 +2858,48 @@ export default function App() {
   useEffect(() => {
     cleanupStaleLocalEntries(loggedEmail || bootEmail || null)
   }, [loggedEmail, bootEmail])
+
+  useEffect(() => {
+    const previousVersion = localStorage.getItem(APP_RUNTIME_VERSION_KEY)
+    if (previousVersion === CURRENT_APP_VERSION) return
+
+    const resetForVersionUpdate = async () => {
+      const previousTheme = localStorage.getItem('theme')
+      const hadPreviousVersion = Boolean(previousVersion)
+
+      localStorage.clear()
+      sessionStorage.clear()
+
+      if (previousTheme) {
+        localStorage.setItem('theme', previousTheme)
+      }
+      localStorage.setItem(APP_RUNTIME_VERSION_KEY, CURRENT_APP_VERSION)
+
+      try {
+        if ('caches' in window) {
+          const keys = await caches.keys()
+          await Promise.all(keys.map((key) => caches.delete(key)))
+        }
+      } catch (err) {
+        console.warn('[version-reset] Failed to clear Cache Storage', err)
+      }
+
+      try {
+        if ('serviceWorker' in navigator) {
+          const registrations = await navigator.serviceWorker.getRegistrations()
+          await Promise.all(registrations.map((registration) => registration.update()))
+        }
+      } catch (err) {
+        console.warn('[version-reset] Failed to refresh service worker registrations', err)
+      }
+
+      if (hadPreviousVersion) {
+        window.location.reload()
+      }
+    }
+
+    void resetForVersionUpdate()
+  }, [])
 
   useEffect(() => {
     if (!globalQuickMenuOpen) return
