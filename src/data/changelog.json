@@ -1,5 +1,22 @@
 [
   {
+    "version": "v2",
+    "summary": "home badge + release stream refresh",
+    "added": [
+      "Home header now includes an animated clickable version badge that opens the Cooking release-notes view in one tap.",
+      "Release badge label now surfaces the latest version automatically using changelog-driven parsing (`Updated version : v...`).",
+      "Changelog banner now uses a tighter header-style gradient section for faster scanability on mobile."
+    ],
+    "improved": [
+      "Version badge contrast and shimmer animation were refined for clearer visibility in dark mode and compact screens.",
+      "Cooking release page spacing was tuned so hero copy and version cards no longer overlap gradient transition areas.",
+      "Floating back-to-profile control visual balance and layering were refined for better readability and touch comfort."
+    ],
+    "removed": [
+      "Legacy top `Changelog + version pill` header block in Cooking view was removed to simplify the release-reading flow."
+    ]
+  },
+  {
     "version": "v1.0.5",
     "summary": "alerts + cooking log",
     "added": [
