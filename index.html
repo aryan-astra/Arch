@@ -14,34 +14,207 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black" />
     <title>Arch</title>
+    <style>
+      html, body {
+        margin: 0;
+        min-height: 100%;
+        background: #000;
+        color: #f2f2f7;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+      }
+
+      #root {
+        min-height: 100vh;
+      }
+
+      .arch-preboot {
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background:
+          radial-gradient(120% 75% at 8% 18%, rgba(255, 255, 255, 0.13), transparent 62%),
+          radial-gradient(130% 95% at 90% 0%, rgba(255, 255, 255, 0.06), transparent 68%),
+          #000;
+      }
+
+      .arch-preboot-card {
+        width: min(90vw, 340px);
+        border-radius: 16px;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        background: rgba(255, 255, 255, 0.05);
+        box-shadow: 0 18px 40px rgba(0, 0, 0, 0.36);
+        padding: 18px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .arch-preboot-spinner {
+        width: 18px;
+        height: 18px;
+        border-radius: 999px;
+        border: 2px solid rgba(255, 255, 255, 0.26);
+        border-top-color: rgba(255, 255, 255, 0.92);
+        animation: arch-preboot-spin 0.9s linear infinite;
+        flex-shrink: 0;
+      }
+
+      .arch-preboot-copy {
+        min-width: 0;
+      }
+
+      .arch-preboot-title {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 700;
+        line-height: 1.2;
+      }
+
+      .arch-preboot-subtitle {
+        margin: 2px 0 0;
+        font-size: 12px;
+        color: rgba(242, 242, 247, 0.74);
+      }
+
+      @keyframes arch-preboot-spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="arch-preboot" role="status" aria-live="polite">
+        <div class="arch-preboot-card">
+          <div class="arch-preboot-spinner" aria-hidden="true"></div>
+          <div class="arch-preboot-copy">
+            <p class="arch-preboot-title">Loading Arch</p>
+            <p class="arch-preboot-subtitle">Preparing your student portal…</p>
+          </div>
+        </div>
+      </div>
+    </div>
     <script>
       (() => {
-        const RECOVERY_KEY = "arch.shell.recovery.once";
-        window.setTimeout(async () => {
+        const DEFAULT_CHECK_DELAY_MS = 12000;
+        const PREBOOT_FALLBACK_REASON = "shell-timeout";
+
+        if (!window.__ARCH_BOOTSTRAP_STARTED_AT__) {
+          window.__ARCH_BOOTSTRAP_STARTED_AT__ = Date.now();
+        }
+
+        const escapeHtml = (value) =>
+          String(value)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;");
+
+        const clearClientCaches = async () => {
+          if ("serviceWorker" in navigator) {
+            const regs = await navigator.serviceWorker.getRegistrations();
+            await Promise.all(regs.map((reg) => reg.unregister()));
+          }
+          if ("caches" in window) {
+            const keys = await caches.keys();
+            await Promise.all(keys.map((key) => caches.delete(key)));
+          }
+        };
+
+        const renderShellFallback = (reason) => {
           const root = document.getElementById("root");
-          if (root && root.childElementCount > 0) {
-            sessionStorage.removeItem(RECOVERY_KEY);
+          if (!root) return;
+          root.innerHTML = `
+            <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:#000;color:#f2f2f7;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text','Helvetica Neue',Arial,sans-serif;">
+              <div style="width:min(92vw,430px);padding:18px;border:1px solid rgba(255,255,255,0.14);border-radius:16px;background:rgba(255,255,255,0.06);box-shadow:0 18px 40px rgba(0,0,0,0.35);">
+                <h1 style="margin:0 0 8px;font-size:20px;line-height:1.15;">Arch is taking too long to start</h1>
+                <p style="margin:0 0 12px;font-size:13px;line-height:1.45;color:rgba(242,242,247,0.82);">
+                  The app shell did not mount in time. Reload once, or clear client cache and retry.
+                </p>
+                <pre style="margin:0 0 12px;padding:10px 11px;border-radius:10px;border:1px solid rgba(255,255,255,0.14);background:rgba(0,0,0,0.42);font-size:11px;line-height:1.4;white-space:pre-wrap;word-break:break-word;color:rgba(242,242,247,0.86);">${escapeHtml(reason)}</pre>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                  <button id="arch-shell-reload" style="border:0;border-radius:999px;padding:9px 14px;font-size:12px;font-weight:700;background:#ffffff;color:#111;cursor:pointer;">Reload</button>
+                  <button id="arch-shell-reset" style="border:1px solid rgba(255,255,255,0.24);border-radius:999px;padding:9px 14px;font-size:12px;font-weight:700;background:transparent;color:#f2f2f7;cursor:pointer;">Clear cache + reload</button>
+                </div>
+              </div>
+            </div>
+          `;
+
+          const reloadBtn = document.getElementById("arch-shell-reload");
+          if (reloadBtn) {
+            reloadBtn.addEventListener("click", () => {
+              window.location.reload();
+            });
+          }
+
+          const resetBtn = document.getElementById("arch-shell-reset");
+          if (resetBtn) {
+            resetBtn.addEventListener("click", async () => {
+              try {
+                await clearClientCaches();
+              } catch (error) {
+                console.error("Arch shell fallback reset failed", error);
+              } finally {
+                window.location.reload();
+              }
+            });
+          }
+        };
+
+        const hasMeaningfulMount = () => {
+          const root = document.getElementById("root");
+          if (!root) return false;
+          const prebootOnly =
+            root.childElementCount === 1 &&
+            !!root.querySelector(".arch-preboot");
+          if (prebootOnly) return false;
+          if (
+            document.querySelector(".app") ||
+            document.querySelector(".login-screen") ||
+            document.querySelector(".not-found-screen") ||
+            document.getElementById("arch-shell-reload") ||
+            document.getElementById("arch-boot-retry")
+          ) {
+            return true;
+          }
+          const text = (root.textContent || "").trim();
+          return text.length > 28;
+        };
+
+        const getElapsedMs = () =>
+          Date.now() - (window.__ARCH_BOOTSTRAP_STARTED_AT__ || Date.now());
+
+        const shouldKeepWaiting = () => {
+          const state = window.__ARCH_BOOTSTRAP_STATE__;
+          if (state === "mounted" || state === "failed") return false;
+          if (document.getElementById("arch-boot-retry")) return false;
+          if (hasMeaningfulMount()) return false;
+          return true;
+        };
+
+        const pollForMount = () => {
+          if (!shouldKeepWaiting()) return;
+          const elapsed = getElapsedMs();
+          if (elapsed >= DEFAULT_CHECK_DELAY_MS) {
+            renderShellFallback(PREBOOT_FALLBACK_REASON);
             return;
           }
-          if (sessionStorage.getItem(RECOVERY_KEY) === "1") return;
-          sessionStorage.setItem(RECOVERY_KEY, "1");
-          try {
-            if ("serviceWorker" in navigator) {
-              const regs = await navigator.serviceWorker.getRegistrations();
-              await Promise.all(regs.map((reg) => reg.unregister()));
-            }
-            if ("caches" in window) {
-              const keys = await caches.keys();
-              await Promise.all(keys.map((key) => caches.delete(key)));
-            }
-          } catch (error) {
-            console.error("Arch shell recovery failed", error);
+          window.setTimeout(pollForMount, 700);
+        };
+
+        window.addEventListener("arch:bootstrap-mounted", () => {
+          // no-op: polling observes this state and exits
+        });
+
+        window.setTimeout(() => {
+          if (hasMeaningfulMount()) {
+            return;
           }
-          window.location.reload();
-        }, 2500);
+          pollForMount();
+        }, 2200);
       })();
     </script>
     <script type="module" src="/src/main.tsx"></script>

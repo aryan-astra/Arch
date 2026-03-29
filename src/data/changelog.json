@@ -1,5 +1,22 @@
 [
   {
+    "version": "v3",
+    "summary": "marks graph mobile redesign",
+    "added": [
+      "Marks line chart now starts from origin (`0`) and then plots `FT 1`/`LLJ 1` style assessments in sequence for clearer progression.",
+      "Each plotted test point now has a dotted guide down to the x-axis to improve point-to-label readability on compact mobile screens.",
+      "Per-test marks chips were enlarged and bolded for faster scanning (`label + scored/max`) without opening the tooltip."
+    ],
+    "improved": [
+      "Chart stroke/area motion was tuned to smoother `monotone` curves with glow-accented points for a cleaner, more modern visual rhythm.",
+      "Marks card spacing was tightened between title, chart, and detail chips to reduce wasted vertical space on phones.",
+      "Tooltip styling, axis contrast, and chart framing were refined for better legibility in dense dark-mode layouts."
+    ],
+    "removed": [
+      "Removed mini-chart `Latest` and `Peak` stat pills to keep focus on the plotted trend and marks chips."
+    ]
+  },
+  {
     "version": "v2",
     "summary": "home badge + release stream refresh",
     "added": [
