@@ -2176,6 +2176,10 @@ function attendanceCourseKey(course: Pick<AttendanceCourse, 'code' | 'type'>): s
   return `${course.code.trim().toUpperCase()}|${course.type}`
 }
 
+function normalizeCourseCode(code: string): string {
+  return code.trim().toUpperCase()
+}
+
 function applyCourseSlotOverrides(
   attendance: AttendanceCourse[],
   courseSlotOverrides: CourseSlotOverrides
@@ -2255,14 +2259,6 @@ function compareInternalMarks(a: InternalMark, b: InternalMark): number {
   const byAssessment = compareAssessmentNames(a.test, b.test)
   if (byAssessment !== 0) return byAssessment
   return a.max - b.max
-}
-
-function isPracticalCourse(course: AttendanceCourse): boolean {
-  return (
-    course.category === 'Practical' ||
-    /L$/i.test(course.code) ||
-    /\blab\b/i.test(course.title)
-  )
 }
 
 function shortCourseTitle(title: string): string {
@@ -4488,16 +4484,41 @@ function MarksScreen({ attendance, marks }: { attendance: AttendanceCourse[]; ma
   const marksByCode = useMemo(() => {
     const map: Record<string, InternalMark[]> = {}
     for (const mk of marks) {
-      if (!map[mk.courseCode]) map[mk.courseCode] = []
-      map[mk.courseCode]!.push(mk)
+      const codeKey = normalizeCourseCode(mk.courseCode)
+      if (!map[codeKey]) map[codeKey] = []
+      map[codeKey]!.push(mk)
     }
     Object.values(map).forEach((items) => items.sort(compareInternalMarks))
     return map
   }, [marks])
 
   const courseRows = useMemo(() => {
-    return attendance.map((course) => {
-      const tests = (marksByCode[course.code] ?? []).map((entry) => {
+    const groupedCourses = new Map<string, {
+      primary: AttendanceCourse
+      hasTheory: boolean
+      hasPractical: boolean
+    }>()
+
+    for (const course of attendance) {
+      const codeKey = normalizeCourseCode(course.code)
+      const existing = groupedCourses.get(codeKey)
+      if (!existing) {
+        groupedCourses.set(codeKey, {
+          primary: course,
+          hasTheory: course.type === 'Theory',
+          hasPractical: course.type === 'Practical',
+        })
+        continue
+      }
+      existing.hasTheory = existing.hasTheory || course.type === 'Theory'
+      existing.hasPractical = existing.hasPractical || course.type === 'Practical'
+      if (existing.primary.type === 'Practical' && course.type === 'Theory') {
+        existing.primary = course
+      }
+    }
+
+    return Array.from(groupedCourses.entries()).map(([codeKey, groupedCourse]) => {
+      const tests = (marksByCode[codeKey] ?? []).map((entry) => {
         const pct = entry.max > 0 ? (entry.scored / entry.max) * 100 : 0
         return {
           ...entry,
@@ -4505,12 +4526,13 @@ function MarksScreen({ attendance, marks }: { attendance: AttendanceCourse[]; ma
           pct,
         }
       })
-      const isLab = isPracticalCourse(course)
+      const isLab = groupedCourse.hasPractical && !groupedCourse.hasTheory
       const scoredTotal = tests.reduce((sum, t) => sum + t.scored, 0)
       const obtainedMax = tests.reduce((sum, t) => sum + t.max, 0)
       const runningPct = obtainedMax > 0 ? (scoredTotal / obtainedMax) * 100 : 0
       return {
-        course,
+        codeKey,
+        course: groupedCourse.primary,
         tests,
         isLab,
         scoredTotal,
@@ -4527,9 +4549,10 @@ function MarksScreen({ attendance, marks }: { attendance: AttendanceCourse[]; ma
 
   const marksByCourseCode: Record<string, { scored: number; max: number }> = {}
   for (const mk of marks) {
-    if (!marksByCourseCode[mk.courseCode]) marksByCourseCode[mk.courseCode] = { scored: 0, max: 0 }
-    marksByCourseCode[mk.courseCode]!.scored += mk.scored
-    marksByCourseCode[mk.courseCode]!.max += mk.max
+    const codeKey = normalizeCourseCode(mk.courseCode)
+    if (!marksByCourseCode[codeKey]) marksByCourseCode[codeKey] = { scored: 0, max: 0 }
+    marksByCourseCode[codeKey]!.scored += mk.scored
+    marksByCourseCode[codeKey]!.max += mk.max
   }
   const enteredCourseCount = Object.keys(marksByCourseCode).length
   const renderRow = (row: (typeof courseRows)[number]) => {
