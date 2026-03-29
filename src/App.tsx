@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Home, BarChart2, Clock3, CalendarDays, TrendingUp, User, UtensilsCrossed } from "lucide-react"
-import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, YAxis } from "recharts"
+import { CartesianGrid, Area, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
 import {
   classesSafeToMiss, classesNeededToReach,
 } from "./data/real-data"
@@ -127,6 +127,8 @@ const LATEST_CHANGELOG_INDEX = CHANGELOG_ENTRIES.length > 0
   : -1
 const CURRENT_APP_VERSION = CHANGELOG_ENTRIES[LATEST_CHANGELOG_INDEX]?.version ?? 'v1.0.0'
 const APP_RUNTIME_VERSION_KEY = 'arch.runtime.version'
+const APP_RUNTIME_BUILD_KEY = 'arch.runtime.build'
+const CURRENT_RUNTIME_BUILD = 'marks-hotfix-2026-03-29-01'
 const SPECIAL_FRUIT_SURPRISES = ['✨', '🍉', '🍍', '🥭', '🍓'] as const
 const QUICK_DOCK_STORAGE_KEY = 'arch.quickDockTabs.v1'
 const FLOATING_LAYOUT_STORAGE_KEY = 'arch.floatingDockLayout.v1'
@@ -363,7 +365,7 @@ type TabCachePayload = {
 
 const ATTENDANCE_SNAPSHOT_PREFIX = 'arch.attendance.snapshot.'
 const TAB_CACHE_PREFIX = 'arch.tabcache.v1.'
-const TAB_CACHE_VERSION = 4
+const TAB_CACHE_VERSION = 5
 const TAB_CACHE_MAX_AGE_MS = 21 * 24 * 60 * 60 * 1000
 const DAY_ORDER_REFRESH_MS = 10 * 60 * 1000
 const ATTENDANCE_POLL_INTERVALS: Record<AttendancePollingMode, number> = {
@@ -702,6 +704,10 @@ function attendanceCourseKey(course: Pick<AttendanceCourse, 'code' | 'type'>): s
   return `${course.code.trim().toUpperCase()}|${course.type}`
 }
 
+function normalizeCourseCode(code: string): string {
+  return code.trim().toUpperCase()
+}
+
 function applyCourseSlotOverrides(
   attendance: AttendanceCourse[],
   courseSlotOverrides: CourseSlotOverrides
@@ -781,14 +787,6 @@ function compareInternalMarks(a: InternalMark, b: InternalMark): number {
   const byAssessment = compareAssessmentNames(a.test, b.test)
   if (byAssessment !== 0) return byAssessment
   return a.max - b.max
-}
-
-function isPracticalCourse(course: AttendanceCourse): boolean {
-  return (
-    course.category === 'Practical' ||
-    /L$/i.test(course.code) ||
-    /\blab\b/i.test(course.title)
-  )
 }
 
 function shortCourseTitle(title: string): string {
@@ -1903,42 +1901,77 @@ function AttendanceScreen({
 function MarksScreen({ attendance, marks }: { attendance: AttendanceCourse[]; marks: InternalMark[] }) {
   const formatMarkValue = (value: number) => (Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1))
 
-    const renderMarksTooltip = (tooltipProps: any) => {
-      const { active, payload, label } = tooltipProps
-      if (!active || !payload || payload.length === 0) return null
-      const primary = payload.find((item: any) => item.dataKey === 'pct')
-        ?? payload.find((item: any) => item.dataKey === 'failPct')
-        ?? payload[0]
-      if (!primary) return null
-      const source = primary.payload
-      const pctRaw = typeof primary.value === 'number' ? primary.value : Number(primary.value ?? source?.pct ?? 0)
-      const pct = Number.isFinite(pctRaw) ? pctRaw : 0
-      const scored = source?.scored ?? 0
-      const max = source?.max ?? 0
-      return (
-        <div className="marks-tooltip">
-          <div className="marks-tooltip-label">{String(label ?? '')}</div>
-          <div className="marks-tooltip-value">
-            {formatMarkValue(scored)}/{formatMarkValue(max)} ({pct.toFixed(1)}%)
-          </div>
-          {pct < 50 && <div className="marks-tooltip-fail">Below pass threshold</div>}
-        </div>
-      )
+  const renderMarksTooltip = (tooltipProps: unknown) => {
+    if (!tooltipProps || typeof tooltipProps !== 'object') return null
+    const { active, payload, label } = tooltipProps as {
+      active?: boolean
+      payload?: ReadonlyArray<{
+        dataKey?: string
+        value?: number | string | null
+        payload?: { pct?: number; scored?: number; max?: number; isOrigin?: boolean }
+      }>
+      label?: string | number
     }
+    if (!active || !payload || payload.length === 0) return null
+    const primary = payload.find((item) => item.dataKey === 'pct')
+      ?? payload.find((item) => item.dataKey === 'failPct')
+      ?? payload[0]
+    if (!primary) return null
+    const source = primary.payload
+    const pctRaw = typeof primary.value === 'number' ? primary.value : Number(primary.value ?? source?.pct ?? 0)
+    const pct = Number.isFinite(pctRaw) ? pctRaw : 0
+    if (source?.isOrigin) return null
+    const scored = source?.scored ?? 0
+    const max = source?.max ?? 0
+    return (
+      <div className="marks-tooltip">
+        <div className="marks-tooltip-label">{String(label ?? '')}</div>
+        <div className="marks-tooltip-value">
+          {formatMarkValue(scored)}/{formatMarkValue(max)} ({pct.toFixed(1)}%)
+        </div>
+        {pct < 50 && <div className="marks-tooltip-fail">Below pass threshold</div>}
+      </div>
+    )
+  }
 
   const marksByCode = useMemo(() => {
     const map: Record<string, InternalMark[]> = {}
     for (const mk of marks) {
-      if (!map[mk.courseCode]) map[mk.courseCode] = []
-      map[mk.courseCode]!.push(mk)
+      const codeKey = normalizeCourseCode(mk.courseCode)
+      if (!map[codeKey]) map[codeKey] = []
+      map[codeKey]!.push(mk)
     }
     Object.values(map).forEach((items) => items.sort(compareInternalMarks))
     return map
   }, [marks])
 
   const courseRows = useMemo(() => {
-    return attendance.map((course) => {
-      const tests = (marksByCode[course.code] ?? []).map((entry) => {
+    const groupedCourses = new Map<string, {
+      primary: AttendanceCourse
+      hasTheory: boolean
+      hasPractical: boolean
+    }>()
+
+    for (const course of attendance) {
+      const codeKey = normalizeCourseCode(course.code)
+      const existing = groupedCourses.get(codeKey)
+      if (!existing) {
+        groupedCourses.set(codeKey, {
+          primary: course,
+          hasTheory: course.type === 'Theory',
+          hasPractical: course.type === 'Practical',
+        })
+        continue
+      }
+      existing.hasTheory = existing.hasTheory || course.type === 'Theory'
+      existing.hasPractical = existing.hasPractical || course.type === 'Practical'
+      if (existing.primary.type === 'Practical' && course.type === 'Theory') {
+        existing.primary = course
+      }
+    }
+
+    return Array.from(groupedCourses.entries()).map(([codeKey, groupedCourse]) => {
+      const tests = (marksByCode[codeKey] ?? []).map((entry) => {
         const pct = entry.max > 0 ? (entry.scored / entry.max) * 100 : 0
         return {
           ...entry,
@@ -1946,12 +1979,13 @@ function MarksScreen({ attendance, marks }: { attendance: AttendanceCourse[]; ma
           pct,
         }
       })
-      const isLab = isPracticalCourse(course)
+      const isLab = groupedCourse.hasPractical && !groupedCourse.hasTheory
       const scoredTotal = tests.reduce((sum, t) => sum + t.scored, 0)
       const obtainedMax = tests.reduce((sum, t) => sum + t.max, 0)
       const runningPct = obtainedMax > 0 ? (scoredTotal / obtainedMax) * 100 : 0
       return {
-        course,
+        codeKey,
+        course: groupedCourse.primary,
         tests,
         isLab,
         scoredTotal,
@@ -1968,123 +2002,159 @@ function MarksScreen({ attendance, marks }: { attendance: AttendanceCourse[]; ma
 
   const marksByCourseCode: Record<string, { scored: number; max: number }> = {}
   for (const mk of marks) {
-    if (!marksByCourseCode[mk.courseCode]) marksByCourseCode[mk.courseCode] = { scored: 0, max: 0 }
-    marksByCourseCode[mk.courseCode]!.scored += mk.scored
-    marksByCourseCode[mk.courseCode]!.max += mk.max
+    const codeKey = normalizeCourseCode(mk.courseCode)
+    if (!marksByCourseCode[codeKey]) marksByCourseCode[codeKey] = { scored: 0, max: 0 }
+    marksByCourseCode[codeKey]!.scored += mk.scored
+    marksByCourseCode[codeKey]!.max += mk.max
   }
   const enteredCourseCount = Object.keys(marksByCourseCode).length
   const renderRow = (row: (typeof courseRows)[number]) => {
-    const hasFailComponent = row.tests.some((test) => test.pct < 50)
-    const chartColor = hasFailComponent ? 'var(--marks-danger-color)' : 'var(--marks-ok-color)'
+    const chartData = row.tests.map((test) => ({
+      label: test.label,
+      pct: Number(test.pct.toFixed(1)),
+      scored: Number(test.scored.toFixed(1)),
+      max: Number(test.max.toFixed(1)),
+    }))
+    const plotData = chartData.length > 0
+      ? [{ label: '__origin__', pct: 0, scored: 0, max: 0, isOrigin: true }, ...chartData]
+      : chartData
 
     return (
-    <div key={`${row.course.code}|${row.course.type}`} className="course-item">
-      <div className="course-item-top">
-        <div className="course-item-info">
-          <div className="course-item-code">
-            {row.course.code}{row.course.credit > 0 ? ` · ${row.course.credit} credits` : ''}
-          </div>
-          <div className="course-item-title">{shortCourseTitle(row.course.title)}</div>
-        </div>
-        <div className="marks-course-pct-wrap">
-          <div className={`marks-course-pct ${row.runningPct < 50 ? 'danger' : 'ok'}`}>
-            {row.tests.length > 0 ? `${formatMarkValue(row.scoredTotal)}/${formatMarkValue(row.obtainedMax)}` : '—'}
-          </div>
-          <div className="marks-course-pct-sub">Total Marks</div>
-        </div>
-      </div>
-
-      {row.tests.length === 0 ? (
-        <div className="marks-empty-line">No marks entered yet</div>
-      ) : (
-        <div className="marks-course-body">
-          <div className="marks-running-total">
-            <strong>Total written: {formatMarkValue(row.scoredTotal)} of {formatMarkValue(row.obtainedMax)}</strong>
-          </div>
-          {row.tests.length > 0 && (
-            <div className="marks-mini-chart">
-              <div className="marks-mini-chart-plot">
-                <ResponsiveContainer width="100%" height="100%">
-                <LineChart
-                  data={
-                    row.tests.length === 1
-                      ? [
-                        {
-                          label: `${row.tests[0]!.label} A`,
-                          pct: Number(row.tests[0]!.pct.toFixed(1)),
-                          failPct: row.tests[0]!.pct < 50 ? Number(row.tests[0]!.pct.toFixed(1)) : null,
-                          scored: Number(row.tests[0]!.scored.toFixed(1)),
-                          max: Number(row.tests[0]!.max.toFixed(1)),
-                        },
-                        {
-                          label: `${row.tests[0]!.label} B`,
-                          pct: Number(row.tests[0]!.pct.toFixed(1)),
-                          failPct: row.tests[0]!.pct < 50 ? Number(row.tests[0]!.pct.toFixed(1)) : null,
-                          scored: Number(row.tests[0]!.scored.toFixed(1)),
-                          max: Number(row.tests[0]!.max.toFixed(1)),
-                        },
-                      ]
-                      : row.tests.map((test) => ({
-                        label: test.label,
-                        pct: Number(test.pct.toFixed(1)),
-                        failPct: test.pct < 50 ? Number(test.pct.toFixed(1)) : null,
-                        scored: Number(test.scored.toFixed(1)),
-                        max: Number(test.max.toFixed(1)),
-                      }))
-                  }
-                  margin={{ top: 8, right: 6, left: 6, bottom: 6 }}
-                >
-                  <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--marks-chart-grid)" />
-                  <ReferenceLine y={50} stroke="var(--marks-danger-color)" strokeDasharray="4 4" strokeOpacity={0.8} />
-                  <YAxis hide domain={[0, 100]} />
-                  <Tooltip
-                    cursor={{ stroke: chartColor, strokeOpacity: 0.28, strokeWidth: 1.2 }}
-                    content={renderMarksTooltip}
-                  />
-                  <Line
-                    dataKey="pct"
-                    type="monotone"
-                    stroke={chartColor}
-                    strokeWidth={3.1}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    isAnimationActive
-                    animationDuration={760}
-                    animationEasing="ease-out"
-                    dot={{
-                      fill: 'var(--surface-card)',
-                      stroke: chartColor,
-                      strokeWidth: 1.8,
-                      r: 3.6,
-                    }}
-                    activeDot={{
-                      fill: 'var(--surface-card)',
-                      stroke: chartColor,
-                      strokeWidth: 2,
-                      r: 5,
-                    }}
-                  />
-                </LineChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="marks-mini-details" role="list" aria-label="Per-test marks details">
-                {row.tests.map((test, idx) => (
-                  <div
-                    key={`${row.course.code}-mini-${idx}`}
-                    className={`marks-mini-detail-chip ${test.pct < 50 ? 'fail' : 'ok'}`}
-                    role="listitem"
-                  >
-                    <span>{test.label}</span>
-                    <strong>{test.scored.toFixed(1)}/{test.max.toFixed(1)}</strong>
-                  </div>
-                ))}
-              </div>
+      <div key={row.codeKey} className="course-item">
+        <div className="course-item-top">
+          <div className="course-item-info">
+            <div className="course-item-code">
+              {row.course.code}{row.course.credit > 0 ? ` · ${row.course.credit} credits` : ''}
             </div>
-          )}
+            <div className="course-item-title">{shortCourseTitle(row.course.title)}</div>
+          </div>
+          <div className="marks-course-pct-wrap">
+            <div className={`marks-course-pct ${row.runningPct < 50 ? 'danger' : 'ok'}`}>
+              {row.tests.length > 0 ? `${formatMarkValue(row.scoredTotal)}/${formatMarkValue(row.obtainedMax)}` : '—'}
+            </div>
+            <div className="marks-course-pct-sub">Total Marks</div>
+          </div>
         </div>
-      )}
-    </div>
-  )}
+
+        {row.tests.length === 0 ? (
+          <div className="marks-empty-line">No marks entered yet</div>
+        ) : (
+          <div className="marks-course-body">
+            {row.tests.length > 0 && (
+              <div className="marks-mini-chart">
+                <div className="marks-mini-chart-plot">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart
+                      data={plotData}
+                      margin={{ top: 12, right: 10, left: 10, bottom: 26 }}
+                    >
+                      <defs>
+                        <linearGradient id={`miniMarksGradient-${row.codeKey}`} x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#4F7EFF" stopOpacity="0.42" />
+                          <stop offset="65%" stopColor="#4F7EFF" stopOpacity="0.18" />
+                          <stop offset="100%" stopColor="#4F7EFF" stopOpacity="0.02" />
+                        </linearGradient>
+                        <filter id={`miniMarksGlow-${row.codeKey}`}>
+                          <feGaussianBlur stdDeviation="3.2" result="miniGlow" />
+                          <feMerge>
+                            <feMergeNode in="miniGlow" />
+                            <feMergeNode in="SourceGraphic" />
+                          </feMerge>
+                        </filter>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(79, 126, 255, 0.26)" vertical={false} horizontal />
+                      <XAxis
+                        dataKey="label"
+                        tickFormatter={(value: string | number) => (value === '__origin__' ? '' : String(value))}
+                        tick={{ fill: 'rgba(174, 174, 178, 0.86)', fontSize: 9.2, fontWeight: 800 }}
+                        tickLine={{ stroke: 'rgba(79, 126, 255, 0.35)' }}
+                        axisLine={{ stroke: 'rgba(79, 126, 255, 0.38)' }}
+                        tickMargin={6}
+                        height={28}
+                      />
+                      <YAxis
+                        domain={[0, 100]}
+                        ticks={[0, 50, 100]}
+                        tick={{ fill: 'rgba(174, 174, 178, 0.74)', fontSize: 8.8, fontWeight: 700 }}
+                        tickLine={{ stroke: 'rgba(79, 126, 255, 0.35)' }}
+                        axisLine={{ stroke: 'rgba(79, 126, 255, 0.38)' }}
+                        width={26}
+                      />
+                      <ReferenceLine y={0} stroke="rgba(79, 126, 255, 0.42)" strokeWidth={1.1} />
+                      <ReferenceLine y={50} stroke="rgba(255, 152, 0, 0.55)" strokeDasharray="4 4" strokeWidth={1.5} label={{ value: '50%', position: 'right', fill: 'rgba(255, 152, 0, 0.85)', fontSize: 8.8, fontWeight: 700 }} />
+                      <Tooltip
+                        cursor={{ stroke: 'rgba(79, 126, 255, 0.6)', strokeWidth: 2, strokeDasharray: '4 4' }}
+                        content={renderMarksTooltip}
+                      />
+                      <Area
+                        dataKey="pct"
+                        type="monotone"
+                        fill={`url(#miniMarksGradient-${row.codeKey})`}
+                        fillOpacity={1}
+                        stroke="none"
+                        isAnimationActive
+                        animationDuration={1400}
+                        animationEasing="ease-out"
+                        animationBegin={0}
+                      />
+                      {chartData.map((point, idx) => (
+                        <ReferenceLine
+                          key={`${row.codeKey}-guide-${point.label}-${idx}`}
+                          segment={[{ x: point.label, y: 0 }, { x: point.label, y: point.pct }]}
+                          stroke="rgba(107, 160, 255, 0.44)"
+                          strokeDasharray="2 3"
+                          strokeWidth={1}
+                        />
+                      ))}
+                      <Line
+                        dataKey="pct"
+                        type="monotone"
+                        stroke="#4F7EFF"
+                        strokeWidth={4.5}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        isAnimationActive
+                        animationDuration={1700}
+                        animationEasing="ease-in-out"
+                        animationBegin={300}
+                        filter={`url(#miniMarksGlow-${row.codeKey})`}
+                        dot={{
+                          fill: '#FFFFFF',
+                          stroke: '#4F7EFF',
+                          strokeWidth: 3,
+                          r: 5.5,
+                          filter: 'drop-shadow(0px 3px 6px rgba(79, 126, 255, 0.6))',
+                        }}
+                        activeDot={{
+                          fill: '#6BA0FF',
+                          stroke: '#FFFFFF',
+                          strokeWidth: 3.5,
+                          r: 7.5,
+                          filter: 'drop-shadow(0px 3px 10px rgba(79, 126, 255, 0.8))',
+                        }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="marks-mini-details" role="list" aria-label="Per-test marks details">
+                  {row.tests.map((test, idx) => (
+                    <div
+                      key={`${row.codeKey}-mini-${idx}`}
+                      className={`marks-mini-detail-chip ${test.pct < 50 ? 'fail' : 'ok'}`}
+                      role="listitem"
+                    >
+                      <span>{test.label}</span>
+                      <strong>{test.scored.toFixed(1)}/{test.max.toFixed(1)}</strong>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    )
+  }
 
   return (
     <>
@@ -2861,11 +2931,13 @@ export default function App() {
 
   useEffect(() => {
     const previousVersion = localStorage.getItem(APP_RUNTIME_VERSION_KEY)
-    if (previousVersion === CURRENT_APP_VERSION) return
+    const previousBuild = localStorage.getItem(APP_RUNTIME_BUILD_KEY)
+    const isCurrentRuntime = previousVersion === CURRENT_APP_VERSION && previousBuild === CURRENT_RUNTIME_BUILD
+    if (isCurrentRuntime) return
 
     const resetForVersionUpdate = async () => {
       const previousTheme = localStorage.getItem('theme')
-      const hadPreviousVersion = Boolean(previousVersion)
+      const hadPreviousRuntime = Boolean(previousVersion || previousBuild)
 
       localStorage.clear()
       sessionStorage.clear()
@@ -2874,6 +2946,7 @@ export default function App() {
         localStorage.setItem('theme', previousTheme)
       }
       localStorage.setItem(APP_RUNTIME_VERSION_KEY, CURRENT_APP_VERSION)
+      localStorage.setItem(APP_RUNTIME_BUILD_KEY, CURRENT_RUNTIME_BUILD)
 
       try {
         if ('caches' in window) {
@@ -2893,7 +2966,7 @@ export default function App() {
         console.warn('[version-reset] Failed to refresh service worker registrations', err)
       }
 
-      if (hadPreviousVersion) {
+      if (hadPreviousRuntime) {
         window.location.reload()
       }
     }
