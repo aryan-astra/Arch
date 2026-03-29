@@ -77,12 +77,42 @@ function parseCourseCode(cell: Element | null, fallback: string): string {
   return (codeMatch?.[0] ?? combined).trim()
 }
 
+const THEORY_SLOT_TOKEN_PATTERN = /^[A-G](?:\d+)?$/i
+const PRACTICAL_SLOT_TOKEN_PATTERN = /^P\d+$/i
+const LAB_SLOT_TOKEN_PATTERN = /^L\d+$/i
+const SLOT_TOKEN_PATTERN = /^(?:P\d+|L\d+|[A-G](?:\d+)?)$/i
+
 function extractSlotTokens(slotRaw: string): string[] {
-  return (slotRaw
+  const normalized = slotRaw
     .toUpperCase()
     .replace(/[\u2013\u2014]/g, '-')
-    .replace(/\s+/g, '')
-    .match(/(?:P\d+|L\d+|[A-G])/g) ?? [])
+    .trim()
+  if (!normalized) return []
+
+  const tokens: string[] = []
+  const parts = normalized.split(/[^A-Z0-9]+/g).filter(Boolean)
+  for (const part of parts) {
+    if (
+      PRACTICAL_SLOT_TOKEN_PATTERN.test(part) ||
+      LAB_SLOT_TOKEN_PATTERN.test(part) ||
+      THEORY_SLOT_TOKEN_PATTERN.test(part)
+    ) {
+      tokens.push(part)
+      continue
+    }
+    // Some tables collapse dual theory slots into one token (e.g., "AB")
+    if (/^[A-Z]{2}$/.test(part)) {
+      tokens.push(part[0]!, part[1]!)
+      continue
+    }
+    // Fallback for compact alphanumeric blends like "A1B1" without separators.
+    if (!/\d/.test(part)) continue
+    const compactMatches = part.match(/(?:P\d+|L\d+|[A-Z](?:\d+)?)/g) ?? []
+    for (const candidate of compactMatches) {
+      if (SLOT_TOKEN_PATTERN.test(candidate)) tokens.push(candidate)
+    }
+  }
+  return tokens
 }
 
 // Parses the My_Attendance page HTML (data is embedded in a JS pageSanitizer.sanitize() string)
@@ -640,8 +670,6 @@ export interface TimetableProfileCredits {
   timetableByDay: Record<number, string[]>
 }
 
-const SLOT_TOKEN_PATTERN = /^(?:[A-G]|P\d+|L\d+)$/i
-
 function normalizeSlotToken(raw: string): string {
   return raw.replace(/\u00a0/g, ' ').replace(/\s+/g, '').toUpperCase()
 }
@@ -904,18 +932,18 @@ export function getTodayClasses(
       const hasSlotToken = slotTokens.includes(normalizedSlotCode)
       const isPracticalCourse =
         c.type === 'Practical' ||
-        slotTokens.some((token) => /^P\d+$/.test(token) || /^L\d+$/.test(token))
+        slotTokens.some((token) => PRACTICAL_SLOT_TOKEN_PATTERN.test(token) || LAB_SLOT_TOKEN_PATTERN.test(token))
 
-      // Match theory slots (single letter A-G)
-      if (/^[A-G]$/.test(normalizedSlotCode)) return hasSlotToken && !isPracticalCourse
       // Match lab slots (P## pattern)
-      if (/^P\d+$/.test(normalizedSlotCode)) {
+      if (PRACTICAL_SLOT_TOKEN_PATTERN.test(normalizedSlotCode)) {
         return hasSlotToken && isPracticalCourse
       }
       // Match L slots
-      if (/^L\d+$/.test(normalizedSlotCode)) {
+      if (LAB_SLOT_TOKEN_PATTERN.test(normalizedSlotCode)) {
         return hasSlotToken
       }
+      // Match theory slots (single letter or normalized token)
+      if (THEORY_SLOT_TOKEN_PATTERN.test(normalizedSlotCode)) return hasSlotToken && !isPracticalCourse
       return false
     }) ?? null
 
@@ -925,7 +953,14 @@ export function getTodayClasses(
       slot: normalizedSlotCode,
       course,
     }
-  }).filter(p => p.course !== null || /^[A-G]$/.test(p.slot))
+  }).filter((slotRow) => (
+    slotRow.course !== null ||
+    (
+      THEORY_SLOT_TOKEN_PATTERN.test(slotRow.slot) &&
+      !PRACTICAL_SLOT_TOKEN_PATTERN.test(slotRow.slot) &&
+      !LAB_SLOT_TOKEN_PATTERN.test(slotRow.slot)
+    )
+  ))
 }
 
 // Get schedule for all 5 day orders
