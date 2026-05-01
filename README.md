@@ -1,174 +1,208 @@
 <div align="center">
-  <img src="src/assets/final-arch-logo.svg" alt="Arch logo" width="128" />
+  <img src="src/assets/final-arch-logo.svg" alt="Arch logo" width="116" />
   <h1>Arch</h1>
-  <p><strong>Fast, compact, mobile-first remake of SRM Academia</strong></p>
+  <p><strong>Mobile-first SRM Academia companion with faster UX, stable sessions, and installable PWA flow.</strong></p>
 </div>
 
 <div align="center">
-  <img alt="Build" src="https://img.shields.io/badge/build-passing-111111?style=for-the-badge&logo=githubactions&logoColor=white" />
-  <img alt="Lint" src="https://img.shields.io/badge/lint-passing-1f1f1f?style=for-the-badge&logo=eslint&logoColor=white" />
-  <img alt="React" src="https://img.shields.io/badge/react-19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB" />
-  <img alt="TypeScript" src="https://img.shields.io/badge/typescript-5.9-3178C6?style=for-the-badge&logo=typescript&logoColor=white" />
-  <img alt="Vite" src="https://img.shields.io/badge/vite-7.3-646CFF?style=for-the-badge&logo=vite&logoColor=white" />
-  <img alt="PWA" src="https://img.shields.io/badge/pwa-enabled-0A0A0A?style=for-the-badge&logo=pwa&logoColor=white" />
+  <img alt="React 19" src="https://img.shields.io/badge/React-19-20232A?style=flat-square&logo=react&logoColor=61DAFB" />
+  <img alt="TypeScript 5.9" src="https://img.shields.io/badge/TypeScript-5.9-3178C6?style=flat-square&logo=typescript&logoColor=white" />
+  <img alt="Vite 7" src="https://img.shields.io/badge/Vite-7.3-646CFF?style=flat-square&logo=vite&logoColor=white" />
+  <img alt="PWA Enabled" src="https://img.shields.io/badge/PWA-enabled-111111?style=flat-square&logo=pwa&logoColor=white" />
+  <img alt="Branch Flow" src="https://img.shields.io/badge/flow-feature_%E2%86%92_canary_%E2%86%92_main-0f172a?style=flat-square" />
+  <img alt="Status Active" src="https://img.shields.io/badge/status-active-16a34a?style=flat-square" />
 </div>
 
-## Why Arch is better for daily use
+---
 
-Arch is built to outperform the legacy portal experience on mobile.  
-The focus is fast access, fewer taps, higher information density, and stronger session reliability.
+## What Arch is
 
-- Mobile-first interaction model with compact layouts that reduce scrolling and navigation friction.
-- Real login and data pipeline (`/auth`, `/proxy`) with trusted-session handling and automatic session validation.
-- Actionable attendance UX: risk visibility, leave planning, marks trend, and day-order aware timetable context.
-- Installable PWA workflow with update prompts, offline resilience, and post-install attendance alert support.
+Arch is a compact, high-density remake of the SRM Academia experience.  
+It is designed for daily student usage where speed, glanceability, and session reliability matter more than desktop-style layouts.
 
-## Core features
+It provides one place for:
+- attendance tracking and risk visibility
+- internals/marks trend checks
+- timetable + day-order context
+- profile and account surfaces
+- installable PWA behavior with startup recovery protections
 
-- Live attendance, internal marks, timetable, academic calendar, and full profile surfaces.
-- Adaptive attendance watcher that automatically changes fetch frequency by class activity and day type.
-- Attendance change notifications in installed PWA mode (present, absent, updated).
-- Profile tab notification badge with lightweight unread polling.
-- Ten-theme appearance system with dark-first visual polish and safe-area mobile handling.
-- Startup self-heal path for stale cache/service-worker edge cases.
+---
 
-## Latest sanitized screenshots
+## Why this exists
 
-> Email-like identifiers are intentionally blurred.
+The legacy flow is functional but high-friction on mobile. Arch reduces that friction through:
 
-| Home | Attendance | Mobile home |
-| --- | --- | --- |
-| <img src="public/readme/home-page-sanitized.png" alt="Arch home screenshot" width="300" /> | <img src="public/readme/attendance-page-sanitized.png" alt="Arch attendance screenshot" width="300" /> | <img src="public/readme/mobile-home-sanitized.png" alt="Arch mobile home screenshot" width="260" /> |
+1. **Fewer taps** and more action-focused screens.
+2. **Stronger session handling** with trusted-device persistence rules.
+3. **Adaptive polling** so live data feels fresh without burning battery/network.
+4. **PWA reliability** (update prompt, runtime caching, startup self-heal path).
 
-## Quick start
+---
+
+## Feature map
+
+| Area | What you get |
+|---|---|
+| Authentication | Real login flow through backend proxy (`/auth/*`) and protected upstream proxy (`/proxy/*`) |
+| Attendance | Live aggregates, subject-level status, leave-planning/prediction helpers |
+| Timetable | Day-order aware schedule + batch-safe fallback logic |
+| Marks | Compact trend visuals and per-course progress |
+| Notifications | Attendance delta checks and installable-app notification integration |
+| Profile/Admin | Session info, user details, admin metrics surface for configured admin user |
+| Theme system | Dark-first polished UI with multiple theme tones |
+
+---
+
+## Screenshots
+
+> Data in screenshots is sanitized.
+
+| Home | Attendance | Mobile Home |
+|---|---|---|
+| <img src="public/readme/home-page-sanitized.png" alt="Home screen" width="300" /> | <img src="public/readme/attendance-page-sanitized.png" alt="Attendance screen" width="300" /> | <img src="public/readme/mobile-home-sanitized.png" alt="Mobile home screen" width="250" /> |
+
+---
+
+## Architecture (high level)
+
+```text
+Browser (React + Vite PWA)
+  ├─ /auth/*  ────────────────┐
+  └─ /proxy/* ────────────────┤
+                               v
+                    Node/Express Backend (server/index.cjs)
+                      ├─ Session store (Redis if configured, else memory)
+                      ├─ Login/session validation endpoints
+                      ├─ Authenticated upstream proxy
+                      └─ Admin + push subscription endpoints
+                               |
+                               v
+                        SRM/Zoho upstream services
+```
+
+---
+
+## Tech stack
+
+### Frontend
+- **React 19**
+- **TypeScript 5.9**
+- **Vite 7**
+- **Framer Motion** for interaction polish
+- **Recharts** for graph rendering
+- **vite-plugin-pwa** for service worker + manifest integration
+
+### Backend
+- **Express 5**
+- **Axios + axios-cookiejar-support + tough-cookie** for authenticated upstream session handling
+- **Redis** (optional but recommended) for persistent sessions
+
+---
+
+## Local setup
+
+### Prerequisites
+- Node.js 20+ recommended
+- npm 10+ recommended
+
+### Install
 
 ```bash
 npm install
+```
+
+### Run
+
+```bash
+# frontend + backend together
 npm run dev
+
+# frontend only
+npm run dev:vite
+
+# backend only
+npm run dev:server
 ```
 
-Useful scripts:
-
-- `npm run dev` → backend + frontend
-- `npm run dev:vite` → frontend only
-- `npm run build` → production build
-- `npm run lint` → eslint checks
-
-## Core stack
-
-- Frontend: React + TypeScript + Vite + Framer Motion
-- Backend: Express + Axios cookie-jar auth proxy
-- PWA: `vite-plugin-pwa`
-
-## Local-first + canary workflow
-
-- Work locally on `feature/*` branches with `npm run dev`.
-- Merge tested features into `canary` first (staging/integration).
-- Promote `canary` to `main` only after verification.
-- Keep Netlify production on `main`; enable branch deploys for `canary`.
-
-## Render backend env vars (required/recommended)
-
-- `REDIS_URL` (recommended): enables persistent server sessions and reduces random logout after restarts.
-- `SRM_TLS_INSECURE` (optional, default unset): set to `1` only if SRM TLS chain fails in your environment.
-- `ADMIN_USER` (optional, default `as6977`): admin account allowed for metrics endpoint.
-- `ADMIN_METRICS_TOKEN` (recommended): required for `/auth/admin/metrics` access.
-- `WEB_PUSH_PUBLIC_KEY` (required for closed-app push subscribe): VAPID public key.
-- `WEB_PUSH_PRIVATE_KEY` (required for sender worker rollout): VAPID private key.
-- `WEB_PUSH_SUBJECT` (required for sender worker rollout): contact URI like `mailto:you@example.com`.
-
-## Admin active-user metrics
-
-Primary UX:
-
-- Logged in as `as6977`, open **Profile** tab to view:
-  - active user count
-  - active session count
-  - push subscription count
-  - session store mode
-
-API options (for backend ops/testing):
-
-Option A (header-token protected endpoint):
+### Quality checks
 
 ```bash
-curl -H "x-admin-user: as6977" -H "x-admin-token: <ADMIN_METRICS_TOKEN>" https://<render-service>.onrender.com/auth/admin/metrics
+npm run lint
+npm run build
+npm run preview
 ```
 
-Option B (session-auth endpoint, only for `as6977` login):
+---
 
-```bash
-curl -H "x-session-token: <academia_session_token>" https://<render-service>.onrender.com/auth/admin/metrics/self
-```
+## Environment variables
 
-Returns active session count, unique active users, per-user session stats, and recent auth/logout events.
+Create `.env` for local backend/runtime configuration.
 
-## In-app version & changelog
+| Variable | Required | Purpose |
+|---|---|---|
+| `REDIS_URL` | Recommended | Enables persistent session store and better login continuity |
+| `RENDER_REDIS_URL` | Optional | Alternate Redis env key supported by backend |
+| `SRM_TLS_INSECURE` | Optional | Set to `1` only when TLS chain issues require insecure upstream TLS mode |
+| `ADMIN_USER` | Optional | Username allowed to access admin self-metrics |
+| `ADMIN_METRICS_TOKEN` | Recommended for ops | Token for header-protected admin metrics endpoint |
+| `WEB_PUSH_PUBLIC_KEY` | Required for closed-app push | Public VAPID key |
+| `WEB_PUSH_PRIVATE_KEY` | Required for closed-app push | Private VAPID key |
+| `WEB_PUSH_SUBJECT` | Required for closed-app push | Contact URI, usually `mailto:...` |
 
-- Profile includes a **Cooking** option for all users.
-- Tapping **Cooking** opens a dedicated black-background changelog page.
-- Version rows are expandable and show short `Added / Improved / Removed` notes.
+---
 
-## Storage hygiene and garbage cleanup
+## Important endpoints
 
-- Per-user tab cache (`arch.tabcache.v1.*`) now has:
-  - schema versioning
-  - max-age expiry (21 days)
-  - automatic cleanup of stale/invalid entries
-- On login, cache from other users is removed.
-- On logout, current user cache + attendance snapshot are removed.
+### Auth/session
+- `POST /auth/login`
+- `GET /auth/validate`
+- `POST /auth/logout`
+- `DELETE /auth/sessions`
 
-This prevents uncontrolled localStorage growth while keeping fast startup for the active user.
+### Proxy
+- `GET /proxy/*`
 
-## Uptime strategy
+### Push (beta surfaces)
+- `GET /auth/push/status`
+- `GET /auth/push/public-key`
+- `POST /auth/push/subscription`
+- `DELETE /auth/push/subscription`
 
-- Render free web services can sleep when idle.
-- For stable always-on sessions, use a paid always-on Render instance + Redis.
-- If free tier is kept, occasional re-auth after idle/restart is expected.
+### Admin
+- `GET /auth/admin/metrics`
+- `GET /auth/admin/metrics/self`
+- `GET /auth/health`
 
-## Closed-app push subscription beta (internal)
+---
 
-Authenticated endpoints:
+## Branch and release workflow
 
-- `GET /auth/push/status` → rollout phase + requirements + `subscriptionStored`
-- `GET /auth/push/public-key` → VAPID public key for `PushManager.subscribe`
-- `POST /auth/push/subscription` → stores subscription payload for logged-in user
-- `DELETE /auth/push/subscription` → removes stored subscription for logged-in user
+Recommended flow:
 
-Current phases:
+1. Build features on `feature/*`
+2. Merge into `canary` for integration/staging checks
+3. Promote to `main` for production
 
-- `design-only` when VAPID env vars are incomplete
-- `subscription-ready` when keys are configured but this account has not subscribed yet
-- `subscription-stored` when this account is already subscribed
+Production rule of thumb:
+- `canary` should stay integration-clean
+- `main` should stay deploy-clean
+- run lint + build before each promotion
 
-What is done now:
+---
 
-- Backend endpoints exist for internal testing.
-- Backend stores subscriptions in Redis when `REDIS_URL` exists, otherwise in memory.
-- Admin metrics and `/auth/health` include push subscription counts.
-- Attendance alert enable flow now auto-attempts closed-app push subscription when browser/device support + VAPID config are present.
+## Deployment notes
 
-UI note:
+- Frontend is optimized for static hosting (Netlify-style setup via `public/_redirects`).
+- Backend is designed for Render-style Node hosting with optional Redis.
+- For best uptime and fewer session drops, use always-on backend + Redis.
 
-- Closed-app push has no separate user-facing section; it is integrated under Attendance Alerts.
+---
 
-Still pending for full delivery:
+## Developer notes
 
-- sender worker that dispatches web push payloads on attendance deltas
-- automatic cleanup for expired push endpoints (410/404 invalidation)
-
-## Speed and performance engineering
-
-- Adaptive polling strategy:
-  - active class: 20s
-  - between classes: 60s
-  - off-hours: 7m
-  - idle day (no class windows): 15m
-  - weekend: 25m
-  - hidden tab safety floor: 3m
-- Heavy chart surface is lazy-loaded so first render stays fast.
-- Workbox runtime caching keeps documents, assets, and media responsive under unstable networks.
-- Vendor chunk splitting keeps initial route payload smaller and improves cache reuse across updates.
-- Day-order refresh is throttled and decoupled from every attendance request.
-- PWA startup recovery clears broken stale cache states to avoid blank-shell regressions.
+- Keep startup resilience intact (`index.html` preboot shell + `src/main.tsx` recovery path).
+- Keep adaptive polling strategy intact unless intentionally reworked.
+- Avoid broad cache/storage resets; prefer namespaced cleanup behavior.
+- Preserve auth reason-code contract between backend and frontend.
 
