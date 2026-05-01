@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Home, BarChart2, Clock3, CalendarDays, TrendingUp, User, UtensilsCrossed } from "lucide-react"
 import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, YAxis } from "recharts"
+import type { TooltipContentProps, TooltipPayloadEntry } from "recharts"
 import {
   classesSafeToMiss, classesNeededToReach,
 } from "./data/real-data"
@@ -1903,28 +1904,50 @@ function AttendanceScreen({
 function MarksScreen({ attendance, marks }: { attendance: AttendanceCourse[]; marks: InternalMark[] }) {
   const formatMarkValue = (value: number) => (Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1))
 
-    const renderMarksTooltip = (tooltipProps: any) => {
-      const { active, payload, label } = tooltipProps
-      if (!active || !payload || payload.length === 0) return null
-      const primary = payload.find((item: any) => item.dataKey === 'pct')
-        ?? payload.find((item: any) => item.dataKey === 'failPct')
-        ?? payload[0]
-      if (!primary) return null
-      const source = primary.payload
-      const pctRaw = typeof primary.value === 'number' ? primary.value : Number(primary.value ?? source?.pct ?? 0)
-      const pct = Number.isFinite(pctRaw) ? pctRaw : 0
-      const scored = source?.scored ?? 0
-      const max = source?.max ?? 0
-      return (
-        <div className="marks-tooltip">
-          <div className="marks-tooltip-label">{String(label ?? '')}</div>
-          <div className="marks-tooltip-value">
-            {formatMarkValue(scored)}/{formatMarkValue(max)} ({pct.toFixed(1)}%)
-          </div>
-          {pct < 50 && <div className="marks-tooltip-fail">Below pass threshold</div>}
+  type MarksChartPoint = {
+    label: string
+    pct: number
+    failPct: number | null
+    scored: number
+    max: number
+  }
+
+  const isMarksChartPoint = (value: unknown): value is MarksChartPoint => {
+    if (!value || typeof value !== 'object') return false
+    const candidate = value as Partial<MarksChartPoint>
+    return (
+      typeof candidate.label === 'string'
+      && typeof candidate.pct === 'number'
+      && (typeof candidate.failPct === 'number' || candidate.failPct === null)
+      && typeof candidate.scored === 'number'
+      && typeof candidate.max === 'number'
+    )
+  }
+
+  const renderMarksTooltip = ({ active, payload, label }: TooltipContentProps) => {
+    if (!active || !payload || payload.length === 0) return null
+
+    const entries = payload as TooltipPayloadEntry[]
+    const primary = entries.find((item) => item.dataKey === 'pct')
+      ?? entries.find((item) => item.dataKey === 'failPct')
+      ?? entries[0]
+    if (!primary) return null
+
+    const source = isMarksChartPoint(primary.payload) ? primary.payload : undefined
+    const pctRaw = typeof primary.value === 'number' ? primary.value : Number(primary.value ?? source?.pct ?? 0)
+    const pct = Number.isFinite(pctRaw) ? pctRaw : 0
+    const scored = source?.scored ?? 0
+    const max = source?.max ?? 0
+    return (
+      <div className="marks-tooltip">
+        <div className="marks-tooltip-label">{String(label ?? '')}</div>
+        <div className="marks-tooltip-value">
+          {formatMarkValue(scored)}/{formatMarkValue(max)} ({pct.toFixed(1)}%)
         </div>
-      )
-    }
+        {pct < 50 && <div className="marks-tooltip-fail">Below pass threshold</div>}
+      </div>
+    )
+  }
 
   const marksByCode = useMemo(() => {
     const map: Record<string, InternalMark[]> = {}
