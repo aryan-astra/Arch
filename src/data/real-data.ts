@@ -1,4 +1,19 @@
-// Real student data scraped from academia.srmist.edu.in on 11-Mar-2026
+/**
+ * ⚠️  DEPRECATED: This file previously contained real student PII from academia.srmist.edu.in
+ * 
+ * IMPORTANT: This module must NEVER contain:
+ * - Real student names, emails, phone numbers, registration numbers
+ * - Real faculty names, emails, phone numbers
+ * - Real attendance/marks/personal data
+ * - Any personally identifiable information
+ * 
+ * Reason: Student data is confidential and must not be stored in source control.
+ * 
+ * At runtime, ALL data must be fetched live from the backend via /api/user, /api/attendance, /api/marks
+ * If the backend fails, the UI MUST show explicit error states (not fallback data).
+ * 
+ * See: src/components/Attendance.tsx, src/components/Marks.tsx, src/components/Home.tsx
+ */
 
 export interface StudentInfo {
   name: string
@@ -74,44 +89,31 @@ export const BATCH2_TIMETABLE: Record<number, string[]> = {
   5: ['P41', 'P42', 'P43', 'P44', 'P45', 'E', 'E', 'C', 'F', 'D', 'L51', 'L52'],
 }
 
+// EMPTY SAFE DEFAULTS (DO NOT ADD REAL DATA HERE)
 export const STUDENT: StudentInfo = {
-  name: 'SOUNAVA BANERJEE',
-  regNo: 'RA2411003011625',
-  program: 'B.Tech',
-  department: 'Computer Science and Engineering',
-  section: 'E2',
-  semester: 4,
-  batch: 2,
-  mobile: '7695886223',
-  advisorName: 'Dr. Vidhya S',
-  advisorEmail: 'vidhyas2@srmist.edu.in',
-  advisorPhone: '9444069002',
-  academicAdvisorName: 'Dr. S. Priya',
-  academicAdvisorEmail: 'priyas3@srmist.edu.in',
-  academicAdvisorPhone: '9965930862',
-  academicYear: 'AY2025-26 EVEN',
-  enrollmentDate: '06-Jan-2026',
+  name: '',
+  regNo: '',
+  program: '',
+  department: '',
+  section: '',
+  semester: 0,
+  batch: 0,
+  mobile: '',
+  advisorName: '',
+  advisorEmail: '',
+  advisorPhone: '',
+  academicAdvisorName: '',
+  academicAdvisorEmail: '',
+  academicAdvisorPhone: '',
+  academicYear: '',
+  enrollmentDate: '',
 }
 
-export const ATTENDANCE: AttendanceCourse[] = [
-  { code: '21MAB204T', title: 'Probability and Queueing Theory', type: 'Theory', faculty: 'Dr. R. Kalaiyarasi', slot: 'A', room: 'TP 202', conducted: 30, absent: 6, percent: 80.00, credit: 4, category: 'Basic Science' },
-  { code: '21CSC204J', title: 'Design and Analysis of Algorithms', type: 'Theory', faculty: 'Dr. Dandumahanti Bhanu Priya', slot: 'B', room: 'TP 202', conducted: 26, absent: 7, percent: 73.08, credit: 4, category: 'Professional Core' },
-  { code: '21IPE312P', title: 'ERP Solutions for Digital Enterprises', type: 'Theory', faculty: 'Sneha K', slot: 'C', room: 'TP 105', conducted: 18, absent: 4, percent: 77.78, credit: 3, category: 'Professional Elective' },
-  { code: '21CSC205P', title: 'Database Management Systems', type: 'Theory', faculty: 'Arnab Maity', slot: 'D', room: 'TP 202', conducted: 29, absent: 6, percent: 79.31, credit: 4, category: 'Professional Core' },
-  { code: '21PDH209T', title: 'Social Engineering', type: 'Theory', faculty: 'Christina Sweetline B', slot: 'E', room: 'TP 202', conducted: 16, absent: 4, percent: 75.00, credit: 2, category: 'Humanities & Social Sciences' },
-  { code: '21CSC206T', title: 'Artificial Intelligence', type: 'Theory', faculty: 'Dr. Vidhya S', slot: 'F', room: 'TP 202', conducted: 25, absent: 5, percent: 80.00, credit: 3, category: 'Professional Core' },
-  { code: '21DCS201P', title: 'Design Thinking and Methodology', type: 'Theory', faculty: 'Dr. Vidhya S', slot: 'G', room: 'TP 202', conducted: 25, absent: 3, percent: 88.00, credit: 3, category: 'Engineering Science' },
-  { code: '21CSC204J', title: 'Design and Analysis of Algorithms', type: 'Practical', faculty: 'Dr. Dandumahanti Bhanu Priya', slot: 'P39-P40', room: 'TP014', conducted: 14, absent: 4, percent: 71.43, credit: 4, category: 'Professional Core' },
-  { code: '21PDM301L', title: 'Analytical and Logical Thinking Skills', type: 'Practical', faculty: 'Dr. Vidhya S', slot: 'L51-L52', room: 'NA', conducted: 14, absent: 2, percent: 85.71, credit: 0, category: 'Humanities & Social Sciences' },
-]
+// EMPTY SAFE DEFAULTS (DO NOT ADD REAL DATA HERE)
+export const ATTENDANCE: AttendanceCourse[] = []
 
-export const INTERNAL_MARKS: InternalMark[] = [
-  { courseCode: '21MAB204T', test: 'FT-I', max: 5, scored: 5.00 },
-  { courseCode: '21CSC204J', test: 'FJ-I', max: 15, scored: 9.58 },
-  { courseCode: '21CSC206T', test: 'FT-I', max: 5, scored: 3.00 },
-  { courseCode: '21PDH209T', test: 'FT-II', max: 15, scored: 14.00 },
-  { courseCode: '21PDH209T', test: 'FT-I', max: 5, scored: 5.00 },
-]
+// EMPTY SAFE DEFAULTS (DO NOT ADD REAL DATA HERE)
+export const INTERNAL_MARKS: InternalMark[] = []
 
 /** Compute how many more consecutive classes needed to reach `target` % */
 export function classesNeededToReach(conducted: number, absent: number, target = 75): number {
