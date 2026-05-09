@@ -16,6 +16,7 @@ import { HeroBadge } from "./components/HeroBadge"
 import { GradualBlur } from "./components/GradualBlur"
 import Grainient from "./components/Grainient"
 import { AnimatedShinyText } from "./components/AnimatedShinyText"
+import { LightRays } from "./components/LightRays"
 import changelogEntriesData from "./data/changelog.json"
 
 const loadSessionSnapshot = sessionStorageLib.loadSessionSnapshot
@@ -1236,6 +1237,10 @@ function LoginSpotlight({ compact = false }: { compact?: boolean }) {
 
 function LoginScreen({ onSuccess }: { onSuccess: (email: string) => void }) {
   const [step, setStep] = useState<LoginStep>("email")
+  const [isDesktop, setIsDesktop] = useState(() => {
+    if (typeof window === "undefined") return false
+    return window.matchMedia("(min-width: 900px)").matches
+  })
   const [emailInput, setEmailInput] = useState("")
   const normalizedEmail = normalizeLoginEmail(emailInput)
   const [password, setPassword] = useState("")
@@ -1249,6 +1254,15 @@ function LoginScreen({ onSuccess }: { onSuccess: (email: string) => void }) {
   useEffect(() => {
     setTimeout(() => inputRef.current?.focus(), 80)
   }, [step])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const media = window.matchMedia("(min-width: 900px)")
+    const onMediaChange = () => setIsDesktop(media.matches)
+    onMediaChange()
+    media.addEventListener("change", onMediaChange)
+    return () => media.removeEventListener("change", onMediaChange)
+  }, [])
 
   useEffect(() => {
     if (!loading) return
@@ -1289,7 +1303,25 @@ function LoginScreen({ onSuccess }: { onSuccess: (email: string) => void }) {
   }
 
   return (
-    <div className={`login-screen ${step === "password" ? "password-step" : ""}`}>
+    <div className={`login-screen ${step === "password" ? "password-step" : ""} ${isDesktop ? "desktop-rays" : ""}`}>
+      {isDesktop && (
+        <div style={{ position: "absolute", inset: 0, zIndex: 0 }}>
+          <LightRays
+            raysOrigin="top-center"
+            raysColor="#00ffff"
+            raysSpeed={0.5}
+            lightSpread={1}
+            rayLength={2.2}
+            followMouse={true}
+            mouseInfluence={0.4}
+            noiseAmount={0.1}
+            distortion={0.05}
+            pulsating={false}
+            fadeDistance={0.7}
+            saturation={0.4}
+          />
+        </div>
+      )}
       <LoginSpotlight compact={step === "password"} />
       <div className="login-hero">
         <div className="login-logo" aria-hidden>

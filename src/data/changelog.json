@@ -1,5 +1,22 @@
 [
   {
+    "version": "v4",
+    "summary": "LightRays WebGL background + mobile layout optimization",
+    "added": [
+      "LightRays animated WebGL component added to login page (desktop only) — creates immersive top-center cyan light ray effect that follows mouse movement.",
+      "Desktop detection system using media queries (≥900px) — LightRays renders only on desktop to preserve mobile performance and user experience."
+    ],
+    "improved": [
+      "Login page layout now uses absolute positioning for LightRays container to ensure full viewport coverage and proper canvas rendering.",
+      "Mobile login layout refined with optimized padding and flex positioning for better visual hierarchy.",
+      "Desktop/mobile rendering separation improves performance by avoiding unnecessary WebGL initialization on constrained mobile devices."
+    ],
+    "removed": [
+      "Redundant overlay boxes from login page — simplified visual design for cleaner, more focused authentication experience.",
+      "Excessive mobile padding that caused layout overflow and poor UX."
+    ]
+  },
+  {
     "version": "v3",
     "summary": "marks graph mobile redesign",
     "added": [
