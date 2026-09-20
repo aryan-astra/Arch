@@ -4,12 +4,18 @@
    ============================================================ */
 
 :root {
+  /* Breakpoint tokens (used both in JS via matchMedia and CSS @media). */
+  --bp-tablet: 720px;
+  --bp-desktop: 900px;
+  --bp-wide: 1280px;
+
   /* Palette — pure neutral scale (light defaults) */
   --ink-0:   #000000;
   --ink-1:   #1C1C1E;
   --ink-2:   #3A3A3C;
   --ink-3:   #636366;
-  --ink-4:   #8E8E93;
+  /* P1: bumped from #8E8E93 → #6B6B72 for AA contrast on --ink-9 backgrounds. */
+  --ink-4:   #6B6B72;
   --ink-5:   #AEAEB2;
   --ink-6:   #C7C7CC;
   --ink-7:   #D1D1D6;
@@ -60,7 +66,7 @@
   --content-max: 560px;
   --dynamic-safe-bottom: 0px;
 
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
     "Helvetica Neue", Arial, system-ui, sans-serif;
   font-size: 15px;
   line-height: 1.4;
@@ -908,6 +914,9 @@ img { max-width: 100%; }
 }
 
 /* ── Next class card ────────────────────────────────── */
+.next-class-card-wrap {
+  padding: 0 16px 14px;
+}
 .next-class-card {
   background: var(--white);
   border-radius: 14px;
@@ -1125,6 +1134,7 @@ img { max-width: 100%; }
   letter-spacing: -0.01em;
   display: -webkit-box;
   -webkit-line-clamp: 2;
+  line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
   line-height: 1.3;
@@ -2284,6 +2294,7 @@ img { max-width: 100%; }
   line-height: 1.25;
   display: -webkit-box;
   -webkit-line-clamp: 2;
+  line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -2474,6 +2485,14 @@ img { max-width: 100%; }
   overflow: clip;
   overscroll-behavior: none;
 }
+/* LightRays canvas — rendered behind everything on every viewport so the
+   cyan beams from the top set the mood the moment the page loads. */
+.login-lightrays {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
 .login-spotlight-wrap {
   position: absolute;
   inset: 0;
@@ -2542,6 +2561,30 @@ img { max-width: 100%; }
   position: relative;
   z-index: 1;
 }
+
+/* Mobile logo in hero */
+.login-logo--mobile {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: linear-gradient(160deg, #12172A 0%, #050916 100%);
+  border: 1px solid rgba(255,255,255,0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  margin-bottom: 0;
+  box-shadow: 0 4px 12px rgba(5,9,22,0.3);
+  flex-shrink: 0;
+}
+.login-logo--mobile .academia-logo-static {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+  transform: scale(1.28);
+  transform-origin: center;
+}
 .login-logo {
   width: 84px;
   height: 84px;
@@ -2586,17 +2629,31 @@ img { max-width: 100%; }
   mask-size: contain;
 }
 .login-title-big {
-  font-size: 28px;
-  font-weight: 800;
-  letter-spacing: -0.03em;
+  font-size: clamp(30px, 8vw, 42px);
+  font-weight: 900;
+  letter-spacing: -0.045em;
   color: var(--ink-0);
+  line-height: 0.96;
+}
+/* BlurText renders a <p> — strip default paragraph margin */
+p.login-title-big,
+.login-title-big.blur-text {
+  margin: 0;
+  padding: 0;
+  display: block;
+}
+.login-title-big .blur-text-word,
+.login-title-big .blur-text-letter,
+.login-title-big span {
+  display: inline;
 }
 .login-subtitle {
-  font-size: 15px;
+  font-size: clamp(11px, 3vw, 13px);
   font-weight: 600;
-  color: var(--ink-4);
+  color: var(--ink-3);
   text-align: center;
-  line-height: 1.32;
+  line-height: 1.34;
+  max-width: 32ch;
 }
 .hero-badge-wrap {
   margin-top: 2px;
@@ -2666,6 +2723,15 @@ img { max-width: 100%; }
   font-size: 14px;
   line-height: 1;
   font-weight: 800;
+}
+.login-tagline {
+  font-size: clamp(10px, 2.6vw, 11.5px);
+  color: var(--ink-4);
+  text-align: center;
+  max-width: 36ch;
+  line-height: 1.5;
+  margin-top: 2px;
+  display: none;
 }
 .login-mobile-note {
   margin-top: 3px;
@@ -2773,7 +2839,7 @@ img { max-width: 100%; }
   z-index: 2;
 }
 .login-screen.password-step .login-hero {
-  flex: 0 0 auto;
+  flex: 1 1 auto;
   padding: 14px 14px 6px;
   gap: 2px;
 }
@@ -2790,7 +2856,352 @@ img { max-width: 100%; }
 .login-screen.password-step .login-mobile-note { display: none; }
 .login-screen.password-step .login-community-note { display: none; }
 .login-screen.password-step .login-free-note { display: none; }
+.login-screen.password-step .login-tagline { display: none; }
 .login-screen.password-step .login-form-area { padding-top: 10px; }
+
+/* Lanyard ID-card slot (login screen).
+   Rendered on BOTH the NetID (email) and password steps so the 3D card is
+   present from the first impression. The slot sits between the hero header
+   and the form, with pointer-events:auto so the user can drag/swing the card.
+   The slot stretches further toward the form on mobile so the card renders
+   visibly larger and closer to the reader (per user request). */
+.login-lanyard-slot {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: auto;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+}
+/* On the NetID step the hero is taller (big logo + headline + subtitle +
+   notes) so the slot is still full-screen; content overlays on top. */
+.login-lanyard-slot--email {
+  inset: 0;
+}
+.login-lanyard-slot > * {
+  width: 100%;
+  height: 100%;
+}
+
+/* Right-side feature panel — desktop only */
+.login-right-panel { display: none; }
+
+/* Mobile: constrain lanyard to center space so card doesn't swamp the text */
+@media (max-width: 899px) {
+  .login-lanyard-slot,
+  .login-lanyard-slot--email {
+    top: 28%;
+    bottom: 24%;
+    left: -8%;
+    right: -8%;
+    height: auto;
+  }
+}
+
+/* ── Card ready: glow → zoom → white flash ──────────────────────────────────
+   Duration matches the 3.7 s window between setCardState("ready") and
+   onSuccess() being called (5 000 ms total – 1 300 ms fill time). */
+.login-lanyard-slot--ready {
+  animation: lanyard-ready-glow 3.7s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+}
+
+@keyframes lanyard-ready-glow {
+  0%   { filter: drop-shadow(0 0  10px rgba(255,255,255,0.20)); transform: scale(1.00); }
+  18%  { filter: drop-shadow(0 0  32px rgba(255,255,255,0.45)); transform: scale(1.02); }
+  60%  { filter: drop-shadow(0 0  50px rgba(255,255,255,0.55)); transform: scale(1.04); }
+  84%  { filter: drop-shadow(0 0  80px rgba(255,255,255,0.80)) brightness(1.3); transform: scale(1.07); }
+  100% { filter: drop-shadow(0 0 130px rgba(255,255,255,0.95)) brightness(2.0); transform: scale(1.14); }
+}
+
+/* White flash overlay — fades in at the very end of the ready window so the
+   transition to the home screen feels like a clean light-burst reveal. */
+.login-ready-flash {
+  position: fixed;
+  inset: 0;
+  background: #ffffff;
+  z-index: 9999;
+  pointer-events: none;
+  opacity: 0;
+  animation: login-flash-white 0.55s ease-in 4.25s forwards;
+}
+
+@keyframes login-flash-white {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-lanyard-slot--ready { animation: none; }
+  .login-ready-flash         { animation: none; }
+}
+
+@media (min-width: 900px) {
+  /* === Desktop SaaS-startup landing layout =====================================
+     Dark full-bleed background, 2-column grid. Left: hero copy + login form,
+     right: 3D ID-card lanyard. B&W palette with LightRays behind everything. */
+  .login-screen {
+    background: #050505;
+    color: #fff;
+    padding-top: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    align-items: flex-start;
+  }
+  .login-screen::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(120% 80% at 20% 30%, rgba(0,0,0,0.52) 0%, rgba(0,0,0,0) 60%);
+    z-index: 0;
+    pointer-events: none;
+  }
+
+  /* Hero — left-aligned, overlays the card background */
+  .login-screen .login-hero {
+    align-items: flex-start;
+    justify-content: center;
+    text-align: left;
+    padding: 8vh clamp(52px, 6.5vw, 104px) 4vh;
+    gap: 12px;
+    z-index: 2;
+    position: relative;
+    max-width: 560px;
+  }
+  .login-screen .login-logo {
+    width: 42px;
+    height: 42px;
+    border-radius: 10px;
+    background: linear-gradient(160deg, #1a1a1a 0%, #050505 100%);
+    border: 1px solid rgba(255,255,255,0.14);
+    margin-bottom: 2px;
+  }
+  /* Mobile logo is hidden on desktop; desktop uses separate .login-logo */
+  .login-screen .login-logo--mobile { display: none; }
+
+  /* Alpha badge — sits right below logo, left-aligned */
+  .login-screen .login-alpha-hero-badge {
+    align-self: flex-start;
+    margin-top: 0;
+  }
+  .login-screen .hero-badge {
+    border-color: rgba(255,255,255,0.28);
+    background: rgba(255,255,255,0.04);
+    color: rgba(255,255,255,0.9);
+  }
+
+  /* Giant heading */
+  .login-screen .login-title-big,
+  .login-screen p.login-title-big,
+  .login-screen .login-title-big.blur-text {
+    font-size: clamp(72px, 7.2vw, 116px);
+    line-height: 0.93;
+    letter-spacing: -0.055em;
+    font-weight: 900;
+    color: #ffffff;
+    text-align: left;
+    margin: 0;
+  }
+
+  /* Subtitle */
+  .login-screen .login-subtitle {
+    font-size: 17px;
+    font-weight: 500;
+    color: rgba(255,255,255,0.55);
+    text-align: left;
+    max-width: 48ch;
+    margin-top: 2px;
+    line-height: 1.38;
+  }
+
+  /* Tagline description paragraph */
+  .login-screen .login-tagline {
+    display: block;
+    font-size: 14px;
+    color: rgba(255,255,255,0.40);
+    text-align: left;
+    max-width: 54ch;
+    margin-top: 4px;
+    line-height: 1.65;
+  }
+
+  .login-screen .login-mobile-note { display: none; }
+  .login-screen .login-community-note,
+  .login-screen .login-free-note {
+    text-align: left;
+    color: rgba(255,255,255,0.44);
+    font-size: 12.5px;
+    max-width: 50ch;
+    margin-top: 2px;
+    line-height: 1.4;
+  }
+  .login-screen .login-feedback-link { color: rgba(255,255,255,0.88); }
+  .login-screen .login-free-note-highlight { color: rgba(255,255,255,0.72); font-weight: 600; }
+
+  /* Form: bottom-left, overlaid on card background, less glossy */
+  .login-screen .login-form-area {
+    margin: 0 0 8vh clamp(52px, 6.5vw, 104px);
+    width: min(420px, 88%);
+    max-width: none;
+    padding: 22px 22px 22px;
+    border-radius: 14px;
+    background: rgba(10,10,14,0.55);
+    border: 1px solid rgba(255,255,255,0.09);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5), 0 0 0 0.5px rgba(255,255,255,0.05);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    color: #fff;
+    z-index: 3;
+    position: relative;
+  }
+  .login-screen .login-form-area .login-step-title {
+    color: rgba(255,255,255,0.88);
+    font-size: 11.5px;
+    letter-spacing: 0.20em;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .login-screen .login-form-area input,
+  .login-screen .login-form-area input[type="email"],
+  .login-screen .login-form-area input[type="password"],
+  .login-screen .login-form-area input[type="text"] {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.14);
+    color: #fff;
+    caret-color: #fff;
+  }
+  .login-screen .login-form-area input::placeholder { color: rgba(255,255,255,0.32); }
+  .login-screen .login-form-area input:focus,
+  .login-screen .login-form-area input:focus-visible {
+    border-color: rgba(255,255,255,0.68);
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(255,255,255,0.07);
+  }
+  .login-screen .login-form-area .field-hint,
+  .login-screen .login-form-area .field-meta,
+  .login-screen .login-form-area .login-helper,
+  .login-screen .login-form-area .login-helper-row,
+  .login-screen .login-form-area p,
+  .login-screen .login-form-area small {
+    color: rgba(255,255,255,0.46);
+  }
+  .login-screen .login-form-area .field-hint strong,
+  .login-screen .login-form-area b { color: rgba(255,255,255,0.9); }
+  .login-screen .login-form-area button[type="submit"],
+  .login-screen .login-form-area .login-submit {
+    background: #ffffff;
+    color: #050505;
+    border: 1px solid #ffffff;
+    font-weight: 700;
+    letter-spacing: -0.005em;
+  }
+  .login-screen .login-form-area button[type="submit"]:hover,
+  .login-screen .login-form-area .login-submit:hover {
+    background: rgba(255,255,255,0.90);
+  }
+  /* Domain hint + checkbox labels */
+  .login-screen .login-domain-hint { color: rgba(255,255,255,0.44); }
+  .login-screen .login-domain-hint strong { color: rgba(255,255,255,0.88); }
+  .login-screen .field-checkbox-label { color: rgba(255,255,255,0.82); }
+  .login-screen .field-checkbox-sub { color: rgba(255,255,255,0.40); }
+  .login-screen .login-email-chip { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.14); }
+  .login-screen .login-email-addr { color: rgba(255,255,255,0.82); }
+  .login-screen .login-change-btn { color: rgba(255,255,255,0.55); }
+
+  /* Lanyard card — full-screen background behind all content */
+  .login-screen .login-lanyard-slot,
+  .login-screen .login-lanyard-slot--email {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 1;
+    pointer-events: auto;
+  }
+
+  /* Kill the mobile-only spotlight wash */
+  .login-screen .login-spotlight-wrap { display: none; }
+
+  /* LightRays sits behind everything full-bleed */
+  .login-screen .login-lightrays { z-index: 0; }
+
+  /* ── Right-side feature panel ─────────────────────────────────────────── */
+  .login-right-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    position: absolute;
+    right: clamp(48px, 5.5vw, 96px);
+    top: 50%;
+    transform: translateY(-50%);
+    width: min(260px, 26vw);
+    background: rgba(6,6,9,0.52);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 16px;
+    padding: 22px 20px 20px;
+    z-index: 4;
+    pointer-events: none;
+  }
+  .lrp-header {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.35);
+  }
+  .lrp-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .lrp-list li {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 12.5px;
+    color: rgba(255,255,255,0.68);
+    line-height: 1.4;
+  }
+  .lrp-check {
+    flex-shrink: 0;
+    color: rgba(255,255,255,0.5);
+    margin-top: 1px;
+  }
+  .lrp-tagline {
+    font-size: 10.5px;
+    color: rgba(255,255,255,0.30);
+    line-height: 1.5;
+    padding-top: 10px;
+    border-top: 1px solid rgba(255,255,255,0.07);
+    font-style: italic;
+  }
+
+  /* Keep full layout on password step too */
+  .login-screen.password-step .login-hero {
+    padding: 8vh clamp(52px, 6.5vw, 104px) 4vh;
+    gap: 12px;
+  }
+  .login-screen.password-step .login-title-big { font-size: clamp(72px, 7.2vw, 116px); }
+  .login-screen.password-step .login-subtitle { display: block; }
+  .login-screen.password-step .login-alpha-hero-badge { display: inline-flex; }
+  .login-screen.password-step .login-mobile-note { display: none; }
+  .login-screen.password-step .login-community-note,
+  .login-screen.password-step .login-free-note { display: block; }
+  .login-screen.password-step .login-tagline { display: block; }
+  .login-screen.password-step .login-form-area { padding: 22px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .login-lanyard-slot {
+    pointer-events: none;
+  }
+}
+
 .login-status-note {
   font-size: 11px;
   color: var(--ink-3);
@@ -2913,6 +3324,7 @@ img { max-width: 100%; }
   outline: none;
   transition: border-color 150ms;
   -webkit-appearance: none;
+  appearance: none;
 }
 .field-input:focus { border-color: var(--ink-3); }
 .field-input::placeholder { color: var(--ink-6); }
@@ -4910,5 +5322,828 @@ img { max-width: 100%; }
   font-size: 10.5px;
   font-weight: 800;
   color: var(--marks-danger-color);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   DESKTOP + TABLET RESPONSIVE LAYOUT  (≥ 900px)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Hide desktop-only elements on mobile */
+.home-stats-row,
+.desktop-screen-header,
+.sidebar-user-section {
+  display: none;
+}
+
+@media (min-width: 900px) {
+
+  /* ── Root layout: sidebar + scrollable content ── */
+  .app {
+    display: flex;
+    flex-direction: row;
+    min-height: 100vh;
+  }
+
+  /* Re-show desktop-only elements */
+  .home-stats-row,
+  .desktop-screen-header {
+    display: grid;
+  }
+  .sidebar-user-section {
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Sidebar nav ── */
+  .expandable-nav {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    right: auto;
+    width: 240px;
+    height: 100vh;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    border-top: none;
+    border-radius: 0;
+    border-right: none;
+    padding: 0;
+    background: transparent;
+  }
+
+  .expandable-nav-inner {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 1px;
+    padding: 16px 10px 16px;
+    height: 100%;
+    width: 100%;
+    overflow-y: auto;
+    border-radius: 0;
+    border: none;
+    box-shadow: none;
+    background: #0a0a0a;
+    border-right: 1px solid #1a1a1a;
+  }
+
+  .expandable-nav-item-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 1px;
+    width: 100%;
+  }
+
+  .expandable-nav-btn {
+    width: 100%;
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 10px;
+    padding: 9px 12px;
+    border-radius: 8px;
+    height: auto;
+    font-size: 13.5px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    color: #8e9192;
+    transition: background 120ms, color 120ms;
+  }
+
+  .expandable-nav-btn:hover:not(.active) {
+    background: rgba(255,255,255,0.05);
+    color: #c4c7c8;
+  }
+
+  .expandable-nav-btn.active {
+    background: #1e1e1e !important;
+    color: #ffffff !important;
+    font-weight: 600;
+    box-shadow: none;
+  }
+
+  .expandable-nav-label {
+    display: block !important;
+    overflow: visible;
+    white-space: nowrap;
+    font-size: 13.5px;
+    font-weight: inherit;
+    color: inherit;
+  }
+
+  .expandable-nav-trailing {
+    display: flex;
+    flex-direction: column;
+    margin-top: auto;
+    width: 100%;
+    padding: 0 0 4px;
+    margin-left: 0;
+    padding-left: 0;
+  }
+
+  .expandable-nav-trailing::before {
+    display: none;
+  }
+
+  /* Hide mobile quick-menu on desktop — sidebar shows all tabs */
+  .expandable-nav-trailing .global-smooth-menu {
+    display: none;
+  }
+
+  /* ── Sidebar user section ── */
+  .sidebar-user-sep {
+    height: 1px;
+    background: #1a1a1a;
+    margin: 8px 0 10px;
+    flex-shrink: 0;
+  }
+
+  .sidebar-user-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 12px 8px;
+  }
+
+  .sidebar-user-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: linear-gradient(145deg, #1a2240 0%, #0e1628 100%);
+    border: 1px solid rgba(255,255,255,0.12);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 700;
+    color: #7FA7FF;
+    letter-spacing: -0.01em;
+    flex-shrink: 0;
+  }
+
+  .sidebar-user-info {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+  }
+
+  .sidebar-user-name {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: #e8e8ea;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .sidebar-user-reg {
+    font-size: 10px;
+    font-weight: 500;
+    color: #5a5a5e;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: 'JetBrains Mono', 'Consolas', monospace;
+    letter-spacing: 0.01em;
+  }
+
+  .expandable-nav-badge {
+    position: static;
+    margin-left: auto;
+    min-width: 18px;
+    height: 18px;
+    line-height: 18px;
+    font-size: 10px;
+    padding: 0 5px;
+  }
+
+  /* App name / logo at top of sidebar */
+  .expandable-nav-inner::before {
+    content: "Arch";
+    display: block;
+    font-size: 18px;
+    font-weight: 900;
+    letter-spacing: -0.055em;
+    color: #ffffff;
+    padding: 10px 12px 20px;
+    flex-shrink: 0;
+  }
+
+  /* ── Page content — shift right for sidebar ── */
+  .page-content {
+    margin-left: 240px;
+    max-width: none;
+    width: auto;
+    flex: 1;
+    min-height: 100vh;
+    padding-top: 36px;
+    padding-left: 48px;
+    padding-right: 48px;
+    padding-bottom: 56px;
+    overflow-y: auto;
+  }
+
+  /* ── Global section spacing ── */
+  .section-header {
+    padding: 24px 0 10px;
+  }
+
+  /* ── Desktop screen header (page title bar) ── */
+  .desktop-screen-header {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 0 0 28px;
+    border-bottom: 1px solid #1a1a1a;
+    margin-bottom: 28px;
+  }
+
+  .dsh-title {
+    font-size: 28px;
+    font-weight: 800;
+    letter-spacing: -0.04em;
+    color: #ffffff;
+  }
+
+  .dsh-subtitle {
+    font-size: 13px;
+    font-weight: 400;
+    color: #5a5a5e;
+    margin-top: 2px;
+  }
+
+  /* ── Welcome block (HomeScreen) ── */
+  .welcome-block {
+    padding: 0 0 24px;
+  }
+
+  .welcome-greeting {
+    font-size: 14px;
+    color: #5a5a5e;
+    font-weight: 500;
+    letter-spacing: 0;
+    margin-bottom: 2px;
+  }
+
+  .welcome-name {
+    font-size: 40px;
+    font-weight: 800;
+    letter-spacing: -0.045em;
+    color: #ffffff;
+    line-height: 1;
+  }
+
+  .welcome-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 12px;
+  }
+
+  .welcome-row-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-top: 4px;
+    flex-shrink: 0;
+  }
+
+  .welcome-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .meta-pill {
+    display: inline-flex;
+    align-items: center;
+    height: 26px;
+    padding: 0 10px;
+    border-radius: 6px;
+    font-size: 11.5px;
+    font-weight: 500;
+    background: #141414;
+    border: 1px solid #1f1f1f;
+    color: #6b6b6e;
+    letter-spacing: 0;
+    font-family: 'JetBrains Mono', 'Consolas', monospace;
+  }
+
+  /* ── Home desktop grid ── */
+  .home-desktop-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(0, 0.65fr);
+    gap: 20px;
+    align-items: start;
+  }
+
+  /* ── Home quick-stats row ── */
+  .home-stats-row {
+    display: grid;
+    grid-template-columns: minmax(0, 5fr) minmax(0, 4fr) minmax(0, 3fr);
+    gap: 10px;
+    margin: 0 0 20px;
+  }
+
+  .home-stat-card {
+    border-radius: 12px;
+    padding: 18px 20px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    border: 1px solid #1a1a1a;
+    background: #111111;
+    position: relative;
+    overflow: hidden;
+    min-height: 120px;
+  }
+
+  .home-stat-card.stat-safe {
+    border-color: rgba(111, 251, 190, 0.15);
+    background: linear-gradient(135deg, rgba(111, 251, 190, 0.05) 0%, #111111 100%);
+  }
+
+  .home-stat-card.stat-warning {
+    border-color: rgba(255, 185, 60, 0.2);
+    background: linear-gradient(135deg, rgba(255, 185, 60, 0.04) 0%, #111111 100%);
+  }
+
+  .home-stat-card.stat-danger {
+    border-color: rgba(255, 100, 80, 0.2);
+    background: linear-gradient(135deg, rgba(255, 100, 80, 0.05) 0%, #111111 100%);
+  }
+
+  .home-stat-card.stat-neutral {
+    border-color: rgba(127, 167, 255, 0.15);
+    background: linear-gradient(135deg, rgba(127, 167, 255, 0.04) 0%, #111111 100%);
+  }
+
+  .home-stat-label {
+    font-size: 10.5px;
+    font-weight: 700;
+    color: #5a5a5e;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+
+  .home-stat-value {
+    font-size: 34px;
+    font-weight: 800;
+    letter-spacing: -0.04em;
+    color: #ffffff;
+    line-height: 1;
+    margin-bottom: 6px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .home-stat-sub {
+    font-size: 11px;
+    font-weight: 500;
+    color: #5a5a5e;
+    margin-top: auto;
+  }
+
+  .home-desktop-left {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .home-desktop-right {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    position: sticky;
+    top: 36px;
+  }
+
+  /* ── Attendance ring row on home ── */
+  .att-ring-row {
+    background: #111111;
+    border: 1px solid #1a1a1a;
+    border-radius: 14px;
+    padding: 20px;
+    gap: 20px;
+  }
+
+  /* ── Schedule (sched-list) on home desktop ── */
+  .sched-header {
+    padding: 0 0 10px;
+  }
+
+  .sched-list {
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid #1a1a1a;
+    background: #0d0d0d;
+  }
+
+  .sched-item-wrap + .sched-item-wrap {
+    border-top: 1px solid #151515;
+  }
+
+  .sched-item {
+    padding: 12px 16px;
+  }
+
+  /* ── Next-class card ── */
+  .next-class-card-wrap {
+    padding: 0 0 16px;
+  }
+  .next-class-card {
+    border-radius: 14px;
+    background: #111111;
+    border: 1px solid #1a1a1a;
+    margin-bottom: 16px;
+  }
+
+  /* ── Attendance page desktop ── */
+  .attendance-overview-card {
+    border-radius: 16px;
+    margin: 0 0 20px;
+    background: #111111;
+    border: 1px solid #1a1a1a;
+  }
+
+  .course-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin: 0 0 16px;
+  }
+
+  .course-card {
+    margin: 0;
+    border-radius: 14px;
+    background: #0e0e0e;
+    border: 1px solid #1a1a1a;
+  }
+
+  /* ── Marks page desktop ── */
+  .marks-course {
+    border-radius: 14px;
+    margin: 0 0 10px;
+  }
+
+  .marks-course-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    padding: 0 0 16px;
+  }
+
+  /* ── Schedule page desktop ── */
+  .day-tab-bar {
+    gap: 8px;
+    padding: 0 0 16px;
+  }
+
+  .day-tab {
+    flex: 1;
+    max-width: 110px;
+    padding: 9px 0;
+    font-size: 13px;
+    border-radius: 10px;
+    font-weight: 600;
+  }
+
+  .tt-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .tt-item-wrap {
+    border-radius: 12px;
+    border: 1px solid #1a1a1a;
+    background: #0e0e0e;
+    overflow: hidden;
+  }
+
+  .tt-item {
+    padding: 14px 16px;
+  }
+
+  /* ── Calendar page desktop ── */
+  .calendar-desktop-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.6fr);
+    gap: 24px;
+    align-items: start;
+  }
+
+  .calendar-desktop-left {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .calendar-desktop-right {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    position: sticky;
+    top: 36px;
+  }
+
+  .calendar-grid {
+    border-radius: 14px;
+    overflow: hidden;
+    border: 1px solid #1a1a1a;
+    padding: 4px;
+    background: #0d0d0d;
+  }
+
+  .calendar-day {
+    border-radius: 8px;
+    min-height: 52px;
+  }
+
+  .calendar-events-list {
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid #1a1a1a;
+    background: #0e0e0e;
+  }
+
+  .calendar-event-row {
+    padding: 12px 16px;
+  }
+
+  /* ── Profile desktop ── */
+  .profile-hero {
+    padding: 20px 0 24px;
+    gap: 20px;
+  }
+
+  .profile-avatar-img,
+  .profile-avatar-fallback {
+    width: 80px;
+    height: 80px;
+    font-size: 32px;
+    border-radius: 20px;
+  }
+
+  .profile-name {
+    font-size: 28px;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+  }
+
+  .card-group {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0;
+    border-radius: 14px;
+    overflow: hidden;
+    border: 1px solid #1a1a1a;
+    background: #0e0e0e;
+  }
+
+  .card-row {
+    border-radius: 0;
+    border-color: #1a1a1a;
+  }
+
+  /* ── Mess desktop ── */
+  .mess-day-tabs {
+    gap: 8px;
+    padding: 0 0 16px;
+  }
+
+  .mess-tab-btn {
+    flex: 1;
+    max-width: 110px;
+    padding: 9px 0;
+    font-size: 13px;
+    border-radius: 10px;
+  }
+
+  .mess-row-live {
+    border-radius: 16px;
+    margin: 0 0 16px;
+    background: #111111;
+    border: 1px solid #1a1a1a;
+  }
+
+  /* ── Hero banners (attn-hero) ── */
+  .attn-hero {
+    margin: 0 0 20px;
+    border-radius: 16px;
+    padding: 28px 32px;
+    background: #0f0f0f;
+    border: 1px solid #1a1a1a;
+  }
+
+  .attn-hero-pct {
+    font-size: 56px;
+    font-weight: 800;
+    letter-spacing: -0.04em;
+    color: #6ffbbe;
+  }
+
+  /* ── Card-group (profile details) ── */
+  .card-row:nth-child(odd) {
+    border-right: 1px solid #1a1a1a;
+  }
+
+  /* Ensure padding removed for page items that had inline 16px padding */
+  .sched-header,
+  .section-header {
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  /* ── Below-pills (at-risk courses) on home ── */
+  .below-pills-row {
+    padding: 0 0 12px;
+    flex-wrap: wrap;
+  }
+
+  /* ── Error/status banners ── */
+  .error-banner,
+  .status-banner {
+    border-radius: 10px;
+    margin: 0 0 16px;
+  }
+
+  /* ── PWA banner ── */
+  .pwa-banner {
+    border-radius: 12px;
+    margin: 0 0 16px;
+  }
+
+  /* ── Login page on desktop ── */
+  .login-root {
+    padding-top: 48px;
+  }
+
+  /* ── Desktop-specific component overrides ── */
+
+  /* Welcome version chip */
+  .welcome-version-chip {
+    height: 28px;
+    padding: 0 10px;
+    border-radius: 8px;
+    background: #141414;
+    border: 1px solid #1f1f1f;
+  }
+
+  .welcome-version-text {
+    font-size: 11px;
+    font-weight: 500;
+    color: #6b6b6e;
+  }
+
+  .day-badge {
+    height: 28px;
+    padding: 0 12px;
+    border-radius: 8px;
+    background: #141414;
+    border: 1px solid #1f1f1f;
+    font-size: 11.5px;
+    font-weight: 700;
+    color: #8e9192;
+    letter-spacing: 0.02em;
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  /* Section headers on desktop */
+  .section-title {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #5a5a5e;
+  }
+
+  /* Timetable classes on desktop - time column */
+  .tt-time-col {
+    min-width: 90px;
+  }
+
+  .tt-time-label {
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #5a5a5e;
+  }
+
+  .tt-time-range {
+    font-size: 13px;
+    font-weight: 700;
+    color: #e8e8ea;
+    font-family: 'JetBrains Mono', 'Consolas', monospace;
+    letter-spacing: -0.01em;
+  }
+
+  .tt-duration {
+    font-size: 10.5px;
+    color: #5a5a5e;
+    font-family: 'JetBrains Mono', 'Consolas', monospace;
+  }
+
+  /* Course progress bar - green for desktop */
+  .course-progress-fill {
+    background: #6ffbbe;
+    opacity: 0.85;
+  }
+
+  /* Attendance overview card numbers - large green */
+  .attendance-overview-pct {
+    color: #6ffbbe !important;
+    font-family: 'JetBrains Mono', 'Consolas', monospace;
+  }
+
+  /* Timetable live badge */
+  .tt-item-wrap.live {
+    border-color: rgba(111, 251, 190, 0.25) !important;
+    background: rgba(111, 251, 190, 0.04) !important;
+  }
+
+  .tt-item-wrap.live .tt-time-range {
+    color: #6ffbbe;
+  }
+
+  /* Next class card live state */
+  .next-class-card.live {
+    border-color: rgba(111, 251, 190, 0.25) !important;
+    background: linear-gradient(135deg, rgba(111, 251, 190, 0.06) 0%, #111111 100%) !important;
+  }
+
+  /* ── Theme-tone-dark overrides for desktop ── */
+  .theme-tone-dark .expandable-nav-inner {
+    background: #0a0a0a !important;
+    border-color: #1a1a1a !important;
+  }
+
+  .theme-tone-dark .expandable-nav-btn.active {
+    background: #1e1e1e !important;
+    color: #ffffff !important;
+    box-shadow: none;
+  }
+
+  .theme-tone-dark .expandable-nav-btn:not(.active):hover {
+    background: rgba(255,255,255,0.05) !important;
+    color: #c4c7c8 !important;
+  }
+
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   TABLET (600px–899px) — moderate sidebar and spacing tweaks
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@media (min-width: 600px) and (max-width: 899px) {
+
+  .course-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .course-card {
+    margin: 0;
+  }
+
+  .marks-course-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    padding: 0 0 12px;
+  }
+
+  .att-ring-row {
+    padding: 16px;
+    gap: 16px;
+  }
+
+  .card-group {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0;
+    border-radius: 14px;
+    overflow: hidden;
+    border: 0.5px solid var(--ink-7);
+  }
+
+  .card-row {
+    border-radius: 0;
+  }
+
+  .card-row:nth-child(odd) {
+    border-right: 0.5px solid var(--ink-7);
+  }
+
 }
 

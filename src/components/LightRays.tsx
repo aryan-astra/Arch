@@ -62,22 +62,24 @@ function hexToRgb(hex: string): [number, number, number] {
 function getAnchorAndDir(origin: RaysOrigin, width: number, height: number) {
   const outside = 0.2
   switch (origin) {
+    // In WebGL gl_FragCoord, Y=0 is the BOTTOM of the canvas.
+    // "top-*" sources must have a high Y (above the canvas) and dir pointing DOWN.
     case "top-left":
-      return { anchor: [0, -outside * height] as [number, number], dir: [0, 1] as [number, number] }
+      return { anchor: [0, (1 + outside) * height] as [number, number], dir: [0, -1] as [number, number] }
     case "top-right":
-      return { anchor: [width, -outside * height] as [number, number], dir: [0, 1] as [number, number] }
+      return { anchor: [width, (1 + outside) * height] as [number, number], dir: [0, -1] as [number, number] }
     case "left":
       return { anchor: [-outside * width, 0.5 * height] as [number, number], dir: [1, 0] as [number, number] }
     case "right":
       return { anchor: [(1 + outside) * width, 0.5 * height] as [number, number], dir: [-1, 0] as [number, number] }
     case "bottom-left":
-      return { anchor: [0, (1 + outside) * height] as [number, number], dir: [0, -1] as [number, number] }
+      return { anchor: [0, -outside * height] as [number, number], dir: [0, 1] as [number, number] }
     case "bottom-center":
-      return { anchor: [0.5 * width, (1 + outside) * height] as [number, number], dir: [0, -1] as [number, number] }
-    case "bottom-right":
-      return { anchor: [width, (1 + outside) * height] as [number, number], dir: [0, -1] as [number, number] }
-    default:
       return { anchor: [0.5 * width, -outside * height] as [number, number], dir: [0, 1] as [number, number] }
+    case "bottom-right":
+      return { anchor: [width, -outside * height] as [number, number], dir: [0, 1] as [number, number] }
+    default: // top-center
+      return { anchor: [0.5 * width, (1 + outside) * height] as [number, number], dir: [0, -1] as [number, number] }
   }
 }
 
@@ -160,10 +162,14 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
     fragColor.rgb *= (1.0 - noiseAmount + noiseAmount * n);
   }
 
-  float brightness = 1.0 - (coord.y / iResolution.y);
-  fragColor.x *= 0.1 + brightness * 0.8;
-  fragColor.y *= 0.3 + brightness * 0.6;
-  fragColor.z *= 0.5 + brightness * 0.5;
+  // Brightness gradient: bright near the source, dims toward the opposite edge.
+  // rayDir.y < 0 means rays point downward (top origin) → top should be bright.
+  // rayDir.y > 0 means rays point upward (bottom origin) → bottom should be bright.
+  float normY = coord.y / iResolution.y; // 0 at bottom, 1 at top
+  float brightness = rayDir.y < 0.0 ? normY : (1.0 - normY);
+  fragColor.x *= 0.1 + brightness * 0.9;
+  fragColor.y *= 0.2 + brightness * 0.8;
+  fragColor.z *= 0.35 + brightness * 0.65;
 
   if (saturation != 1.0) {
     float gray = dot(fragColor.rgb, vec3(0.299, 0.587, 0.114));
@@ -272,7 +278,8 @@ export function LightRays({
       const rect = containerRef.current.getBoundingClientRect()
       mouseRef.current = {
         x: (event.clientX - rect.left) / rect.width,
-        y: (event.clientY - rect.top) / rect.height,
+        // Flip Y: browser Y=0 is top, GL Y=0 is bottom.
+        y: 1 - (event.clientY - rect.top) / rect.height,
       }
     }
 

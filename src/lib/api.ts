@@ -166,10 +166,14 @@ function parseAttendancePage(html: string): LiveAttendanceResult {
     })
   }
 
-  // Find attendance table: header has "Hours Conducted" and "Attn %"
+  // Find attendance table: SRM historically shipped both "Hours Conducted" and
+  // "Hours Absent" columns alongside "Attn %", but a portal change (~May 2026)
+  // HTML-comments out the conducted/absent columns leaving only "Attn %".
+  // Accept either schema by keying on Course Code + Attn header presence.
   const attendanceTable = allTables.find(t => {
     const header = t.querySelector('tr')
-    return header?.textContent?.includes('Hours Conducted') && header?.textContent?.includes('Attn')
+    const txt = header?.textContent ?? ''
+    return /Course\s*Code/i.test(txt) && /(Attn|Attendance)\s*%?/i.test(txt)
   })
   if (attendanceTable) {
     const rows = Array.from(attendanceTable.querySelectorAll('tr'))
@@ -215,6 +219,13 @@ function parseAttendancePage(html: string): LiveAttendanceResult {
       const inferredPractical = /\bpractical\b/i.test(normalizedCourseType) || slotTokens.some((token) => /^P\d+$/.test(token) || /^L\d+$/.test(token))
 
       if (code && code.length > 3) {
+        // SRM's current HTML revision comments out the "Hours Absent" column,
+        // so absent always parses as 0. Derive it from the server-reported
+        // percentage and conducted hours so all downstream calculations
+        // (guidance, badges, overallPct) are correct.
+        const derivedAbsent = (absent === 0 && pct < 100 && conducted > 0)
+          ? Math.round(conducted * (1 - pct / 100))
+          : absent
         attendance.push({
           code,
           title,
@@ -223,7 +234,7 @@ function parseAttendancePage(html: string): LiveAttendanceResult {
           slot,
           room,
           conducted,
-          absent,
+          absent: derivedAbsent,
           percent: pct,
           credit: 0,
           category: courseType,
@@ -340,26 +351,83 @@ async function throwIfUnauthorized(resp: Response, fallbackMessage?: string): Pr
   throw new Error(`${failure.message} [${failure.reason}]`)
 }
 
+// Phase 9C: Session-expired detector. The upstream proxy returns 200 with a
+// login-form / block-sessions HTML body when the JSESSIONID has lapsed.
+// We surface that as a typed error so the UI can route back to login.
+export class SessionExpiredError extends Error {
+  reason: string
+  constructor(reason = 'session_expired') {
+    super('Session expired — please log in again')
+    this.name = 'SessionExpiredError'
+    this.reason = reason
+  }
+}
+
+const SESSION_EXPIRED_MARKERS = [
+  /id=["']loginform["']/i,
+  /signin\/v2\/identifier/i,
+  /preannouncement\/block-sessions/i,
+  /accounts\.zoho\.com\/signin/i,
+  /name=["']LOGIN_ID["'][^>]*type=["']email["']/i,
+]
+
+function assertNotLoggedOutHtml(html: string): void {
+  if (!html || html.length < 32) return
+  // The portal serves a tiny snippet (< 32 chars is almost always empty), and
+  // the real attendance/timetable pages embed pageSanitizer.sanitize('...').
+  // If the response contains a login-form marker AND lacks the sanitizer call,
+  // treat it as a session-expired redirect.
+  if (html.includes("pageSanitizer.sanitize(")) return
+  for (const marker of SESSION_EXPIRED_MARKERS) {
+    if (marker.test(html)) {
+      throw new SessionExpiredError()
+    }
+  }
+}
+
 export async function loginUser(
   email: string,
   password: string,
-  opts?: { trusted?: boolean }
-): Promise<{ success: boolean; error?: string }> {
-  try {
-    const resp = await fetch('/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password, trusted: Boolean(opts?.trusted) }),
-    })
-    const data = await resp.json()
-    if (data.success && data.sessionToken) {
-      setSessionToken(data.sessionToken, opts?.trusted ? 'local' : 'session')
-      return { success: true }
+  opts?: { trusted?: boolean; signal?: AbortSignal }
+): Promise<{ success: boolean; error?: string; sessionTerminated?: boolean }> {
+  // P1: exponential backoff for transient network errors. Definitive failures
+  // (4xx, explicit error from server) short-circuit immediately.
+  const BACKOFFS_MS = [0, 700, 1400, 2800]
+  let lastErr = ''
+  for (let attempt = 0; attempt < BACKOFFS_MS.length; attempt++) {
+    if (BACKOFFS_MS[attempt]) {
+      await new Promise((r) => setTimeout(r, BACKOFFS_MS[attempt]))
     }
-    return { success: false, error: data.error || 'Login failed' }
-  } catch {
-    return { success: false, error: 'Network error — is the server running?' }
+    if (opts?.signal?.aborted) {
+      return { success: false, error: 'Login cancelled' }
+    }
+    try {
+      const resp = await fetch('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, trusted: Boolean(opts?.trusted) }),
+        signal: opts?.signal,
+      })
+      let data: { success?: boolean; sessionToken?: string; error?: string; sessionTerminated?: boolean } = {}
+      try { data = await resp.json() } catch { /* non-JSON body */ }
+      if (data.success && data.sessionToken) {
+        setSessionToken(data.sessionToken, opts?.trusted ? 'local' : 'session')
+        return { success: true, sessionTerminated: Boolean(data.sessionTerminated) }
+      }
+      // 4xx or explicit error => do not retry.
+      if (resp.status >= 400 && resp.status < 500) {
+        return { success: false, error: data.error || 'Login failed' }
+      }
+      lastErr = data.error || `Server returned ${resp.status}`
+      // 5xx: fall through to retry.
+    } catch (err) {
+      if ((err as { name?: string })?.name === 'AbortError') {
+        return { success: false, error: 'Login cancelled' }
+      }
+      lastErr = 'Network error — is the server running?'
+    }
   }
+  return { success: false, error: lastErr || 'Login failed after multiple attempts' }
 }
 
 export async function logoutUser() {
@@ -373,6 +441,38 @@ export async function logoutUser() {
     } catch { /* ignore */ }
   }
   setSessionToken(null)
+}
+
+// Silent re-login using credentials persisted in the WebCrypto-backed vault.
+// Returns true when a fresh session token is acquired. Designed to be invoked
+// transparently when an in-flight request throws SessionExpiredError (Academia
+// kicks the user out because of its 2-concurrent-session cap, or the upstream
+// cookies aged out).
+//
+// In-flight de-duplication: many parallel fetches can hit SessionExpiredError
+// at once; only one re-auth attempt should fire, with others awaiting its
+// result.
+let autoReloginInFlight: Promise<boolean> | null = null
+
+export function tryAutoRelogin(): Promise<boolean> {
+  if (autoReloginInFlight) return autoReloginInFlight
+  autoReloginInFlight = (async () => {
+    try {
+      const { loadCredentials, isAutoReloginOptedIn } = await import('./credentials')
+      if (!isAutoReloginOptedIn()) return false
+      const creds = await loadCredentials()
+      if (!creds) return false
+      const result = await loginUser(creds.email, creds.password, { trusted: true })
+      return result.success
+    } catch {
+      return false
+    } finally {
+      // Release the lock after a short cool-down to avoid hammering Zoho if the
+      // stored password is stale (will produce repeated 401s otherwise).
+      setTimeout(() => { autoReloginInFlight = null }, 1500)
+    }
+  })()
+  return autoReloginInFlight
 }
 
 // Fetch real attendance data via auth server proxy
@@ -389,6 +489,7 @@ export async function fetchAttendance(): Promise<LiveAttendanceResult> {
   await throwIfUnauthorized(resp)
   if (!resp.ok) throw new Error(`Server error: HTTP ${resp.status}`)
   const html = await resp.text()
+  assertNotLoggedOutHtml(html)
   const parsed = parseAttendancePage(html)
   const fingerprint = parsed.attendance.map((course) => ({
     courseCode: course.code,
@@ -454,7 +555,9 @@ export async function fetchCurrentDayOrder(): Promise<number | null> {
   })
   await throwIfUnauthorized(resp)
   if (!resp.ok) throw new Error(`Server error: HTTP ${resp.status}`)
-  return parseDayOrderFromWelcome(await resp.text())
+  const html = await resp.text()
+  assertNotLoggedOutHtml(html)
+  return parseDayOrderFromWelcome(html)
 }
 
 function recordFieldValue(record: Record<string, unknown>, keyPattern: RegExp): string {
@@ -751,6 +854,7 @@ export async function fetchTimetableProfileAndCredits(): Promise<TimetableProfil
   await throwIfUnauthorized(resp)
   if (!resp.ok) throw new Error(`Server error: HTTP ${resp.status}`)
   const html = await resp.text()
+  assertNotLoggedOutHtml(html)
   const profilePatch = parseTimetableProfilePage(html)
   const metadata = parseTimetableCourseMetadata(html)
   let timetableByDay = parseTimetableByDayFromHtml(html)
@@ -871,13 +975,53 @@ async function fetchPlannerPage(linkName: string): Promise<string> {
   })
   await throwIfUnauthorized(resp)
   if (!resp.ok) throw new Error(`Server error: HTTP ${resp.status}`)
-  return await resp.text()
+  const html = await resp.text()
+  assertNotLoggedOutHtml(html)
+  return html
+}
+
+// Phase 9D: 7-day TTL cache for academic-planner pages. The planner only
+// changes once per semester, so re-fetching ~200KB HTML on every cold load is
+// wasteful. Keyed by linkName.
+const PLANNER_CACHE_PREFIX = 'academia.planner.'
+const PLANNER_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000
+
+interface PlannerCacheEntry { fetchedAt: number; html: string }
+
+function readPlannerCache(linkName: string): string | null {
+  try {
+    const raw = window.localStorage.getItem(PLANNER_CACHE_PREFIX + linkName)
+    if (!raw) return null
+    const entry = JSON.parse(raw) as PlannerCacheEntry
+    if (typeof entry.fetchedAt !== 'number' || typeof entry.html !== 'string') return null
+    if (Date.now() - entry.fetchedAt > PLANNER_CACHE_TTL_MS) return null
+    return entry.html
+  } catch {
+    return null
+  }
+}
+
+function writePlannerCache(linkName: string, html: string): void {
+  try {
+    const entry: PlannerCacheEntry = { fetchedAt: Date.now(), html }
+    window.localStorage.setItem(PLANNER_CACHE_PREFIX + linkName, JSON.stringify(entry))
+  } catch {
+    // Quota exceeded or storage disabled — silently skip caching.
+  }
+}
+
+async function fetchPlannerPageCached(linkName: string): Promise<string> {
+  const cached = readPlannerCache(linkName)
+  if (cached) return cached
+  const html = await fetchPlannerPage(linkName)
+  writePlannerCache(linkName, html)
+  return html
 }
 
 export async function fetchAcademicCalendarEvents(): Promise<AcademicCalendarEvent[]> {
   const [oddResult, evenResult] = await Promise.allSettled([
-    fetchPlannerPage('Academic_Planner_2025_26_ODD'),
-    fetchPlannerPage('Academic_Planner_2025_26_EVEN'),
+    fetchPlannerPageCached('Academic_Planner_2025_26_ODD'),
+    fetchPlannerPageCached('Academic_Planner_2025_26_EVEN'),
   ])
 
   const events: AcademicCalendarEvent[] = []
@@ -900,6 +1044,36 @@ export async function fetchAcademicCalendarEvents(): Promise<AcademicCalendarEve
     a.date.localeCompare(b.date) ||
     a.title.localeCompare(b.title)
   ))
+}
+
+// Phase 9E: discover the student profile photo URL from the Student Profile
+// Report JSON. Returns a path under /proxy/* that the avatar component can
+// load directly (with an onError fallback to the initials avatar).
+//
+// Cached per-session in localStorage because the photo URL contains a stable
+// filepath token that does not rotate within a semester.
+export async function fetchStudentPhotoUrl(): Promise<string | null> {
+  const cacheKey = 'academia.profilePhotoUrl'
+  try {
+    const cached = window.localStorage.getItem(cacheKey)
+    if (cached) return cached
+  } catch { /* ignore */ }
+
+  const token = getSessionToken()
+  if (!token) return null
+  const resp = await fetch('/proxy/report/Student_Profile_Report?urlParams=%7B%7D', {
+    headers: { 'Accept': 'application/json, text/plain, */*', 'X-Session-Token': token },
+  })
+  if (resp.status === 401) throw new SessionExpiredError()
+  if (!resp.ok) return null
+  const raw = await resp.text()
+  // Match the photo download URL embedded in the JSON HTML payload.
+  // Pattern: /srm_university/academia-academic-services/report/Student_Profile_Report/<id>/Your_Photo/download-file?filepath=...&digestValue=...
+  const m = raw.match(/\/srm_university\/academia-academic-services(\/report\/Student_Profile_Report\/\d+\/Your_Photo\/download-file\?filepath=[^"&\s]+(?:&(?:amp;)?digestValue=[^"&\s]+)?)/)
+  if (!m || !m[1]) return null
+  const photoPath = '/proxy' + m[1].replace(/&amp;/g, '&')
+  try { window.localStorage.setItem(cacheKey, photoPath) } catch { /* ignore */ }
+  return photoPath
 }
 
 export type { AttendanceCourse, InternalMark, StudentInfo }

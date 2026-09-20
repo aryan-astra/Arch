@@ -5,9 +5,14 @@ import { VitePWA } from 'vite-plugin-pwa'
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
-  const devProxyCookies = env.ARCH_DEV_API_COOKIES?.trim() ?? ''
+  // P0: ARCH_DEV_API_COOKIES is ONLY honored in development. Never inject
+  // hardcoded cookies into production builds even if the env var leaks in.
+  const isDev = mode === 'development'
+  const devProxyCookies = isDev ? (env.ARCH_DEV_API_COOKIES?.trim() ?? '') : ''
 
   return {
+  // Allow GLB models (Lanyard 3D card) to be imported as URLs by Vite.
+  assetsInclude: ['**/*.glb'],
   optimizeDeps: {
     // Some environments export NODE_ENV=production globally; force dev React runtime during Vite dev.
     esbuildOptions: {
@@ -56,6 +61,16 @@ export default defineConfig(({ mode }) => {
           if (!id.includes('node_modules')) return undefined
           if (id.includes('framer-motion')) return 'motion-vendor'
           if (id.includes('recharts') || id.includes('\\d3-') || id.includes('/d3-')) return 'charts-vendor'
+          // Heavy Lanyard / 3D stack — only used on the login screen. Keep it
+          // off the main chunk so the post-login app stays slim.
+          if (
+            id.includes('three') ||
+            id.includes('@react-three') ||
+            id.includes('meshline') ||
+            id.includes('@dimforge')
+          ) {
+            return 'lanyard-vendor'
+          }
           return undefined
         },
       },
@@ -110,6 +125,14 @@ export default defineConfig(({ mode }) => {
       workbox: {
         cleanupOutdatedCaches: true,
         globPatterns: ['**/*.{js,css,html,png,svg,ico,webmanifest}'],
+        // The Lanyard 3D bundle (~3.5MB minified) and its GLB asset are only
+        // used on the login screen. We intentionally keep them OUT of the
+        // service worker precache so the install payload stays small; runtime
+        // caching below picks them up after first use.
+        globIgnores: [
+          '**/lanyard-vendor-*.js',
+          '**/card-*.glb',
+        ],
         runtimeCaching: [
           {
             urlPattern: ({ request }) => request.destination === 'document',
@@ -139,6 +162,18 @@ export default defineConfig(({ mode }) => {
               expiration: {
                 maxEntries: 32,
                 maxAgeSeconds: 60 * 60 * 24 * 30,
+              },
+            },
+          },
+          // Cache the GLB model after first use so subsequent visits are fast.
+          {
+            urlPattern: ({ url }) => /\/card-[^/]+\.glb$/.test(url.pathname),
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'lanyard-glb',
+              expiration: {
+                maxEntries: 2,
+                maxAgeSeconds: 60 * 60 * 24 * 90,
               },
             },
           },

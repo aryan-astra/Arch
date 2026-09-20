@@ -58,6 +58,27 @@ if (SRM_TLS_INSECURE) {
   console.warn('[tls] SRM_TLS_INSECURE=1 enabled. Certificate validation is bypassed only for SRM requests.')
 }
 
+// P0: Startup validators — fail fast in production if critical secrets missing.
+const IS_PROD = String(process.env.NODE_ENV || '').toLowerCase() === 'production'
+if (!ADMIN_METRICS_TOKEN) {
+  if (IS_PROD) {
+    console.error('[startup] FATAL: ADMIN_METRICS_TOKEN is required in production.')
+    process.exit(1)
+  } else {
+    console.warn('[admin] ADMIN_METRICS_TOKEN not configured. /auth/admin/metrics will reject all requests.')
+  }
+}
+if (!WEB_PUSH_PRIVATE_KEY || !WEB_PUSH_PUBLIC_KEY) {
+  if (IS_PROD) {
+    console.warn('[startup] WEB_PUSH keys missing — push notifications disabled in production.')
+  } else {
+    console.warn('[push] WEB_PUSH_* not configured. Push endpoints will no-op.')
+  }
+}
+if (IS_PROD && !REDIS_URL) {
+  console.warn('[startup] REDIS_URL not set in production — sessions are in-memory and will be lost on restart.')
+}
+
 function makeClient(jar) {
   return wrapper(axios.create({
     jar,
@@ -372,6 +393,54 @@ function recordAuthEvent(type, details = {}) {
   }
 }
 
+// Lightweight in-memory sliding-window rate limiter for /auth/login.
+// Keeps the last LOGIN_RL_MAX timestamps per key (IP and per email);
+// rejects when window contains more than the cap.
+const LOGIN_RL_WINDOW_MS = 15 * 60 * 1000
+const LOGIN_RL_MAX_PER_IP = 10
+const LOGIN_RL_MAX_PER_EMAIL = 5
+const loginAttemptsByIp = new Map()
+const loginAttemptsByEmail = new Map()
+
+function pruneAttempts(bucket, now) {
+  while (bucket.length && now - bucket[0] > LOGIN_RL_WINDOW_MS) bucket.shift()
+}
+
+function checkLoginRateLimit(ip, email) {
+  const now = Date.now()
+  const ipBucket = loginAttemptsByIp.get(ip) || []
+  pruneAttempts(ipBucket, now)
+  if (ipBucket.length >= LOGIN_RL_MAX_PER_IP) {
+    return { ok: false, reason: 'rate_limited_ip', retryAfterMs: LOGIN_RL_WINDOW_MS - (now - ipBucket[0]) }
+  }
+  if (email) {
+    const emailBucket = loginAttemptsByEmail.get(email) || []
+    pruneAttempts(emailBucket, now)
+    if (emailBucket.length >= LOGIN_RL_MAX_PER_EMAIL) {
+      return { ok: false, reason: 'rate_limited_email', retryAfterMs: LOGIN_RL_WINDOW_MS - (now - emailBucket[0]) }
+    }
+  }
+  return { ok: true }
+}
+
+function noteLoginAttempt(ip, email) {
+  const now = Date.now()
+  const ipBucket = loginAttemptsByIp.get(ip) || []
+  pruneAttempts(ipBucket, now)
+  ipBucket.push(now)
+  loginAttemptsByIp.set(ip, ipBucket)
+  if (email) {
+    const emailBucket = loginAttemptsByEmail.get(email) || []
+    pruneAttempts(emailBucket, now)
+    emailBucket.push(now)
+    loginAttemptsByEmail.set(email, emailBucket)
+  }
+}
+
+// Map verbose internal reasons to the single message we surface to the client
+// to avoid leaking whether the email exists vs whether the password was wrong.
+const GENERIC_AUTH_ERROR = 'Invalid email or password.'
+
 function checkAdminAccess(req) {
   const adminToken = String(req.headers['x-admin-token'] || '')
   const adminUser = normalizeIdentity(String(req.headers['x-admin-user'] || ''))
@@ -535,14 +604,27 @@ app.post('/auth/login', async (req, res) => {
   lastLoginAttemptAt = new Date().toISOString()
   const { email, password, trusted = false } = req.body || {}
   const normalizedEmail = normalizeIdentity(email)
+  const ip = clientIp(req)
   if (!email || !password) {
     recordAuthEvent('login_rejected', {
       reason: 'missing_credentials',
       email: normalizedEmail,
-      ip: clientIp(req),
+      ip,
     })
     return res.status(400).json({ error: 'Email and password required', reason: 'missing_credentials' })
   }
+
+  // Rate-limit before any upstream work.
+  const rl = checkLoginRateLimit(ip, normalizedEmail)
+  if (!rl.ok) {
+    recordAuthEvent('login_rejected', { reason: rl.reason, email: normalizedEmail, ip })
+    res.set('Retry-After', String(Math.max(1, Math.ceil(rl.retryAfterMs / 1000))))
+    return res.status(429).json({
+      error: 'Too many attempts. Please wait a few minutes and try again.',
+      reason: rl.reason,
+    })
+  }
+  noteLoginAttempt(ip, normalizedEmail)
 
   const jar = new CookieJar()
   const client = makeClient(jar)
@@ -635,9 +717,14 @@ app.post('/auth/login', async (req, res) => {
       '| numeric:', /^\d+$/.test(userId ?? ''))
     if (!userId || !/^\d+$/.test(userId)) {
       console.log('[auth] userId invalid - lookup keys present:', Object.keys(lookupData ?? {}))
-      return res.status(401).json({
-        error: 'Could not identify user account.',
+      recordAuthEvent('login_failed', {
         reason: 'user_id_extraction_failed',
+        email: normalizedEmail,
+        ip,
+      })
+      return res.status(401).json({
+        error: GENERIC_AUTH_ERROR,
+        reason: 'auth_failed',
       })
     }
     console.log('[auth] userId value:', `${String(userId).slice(0, 4)}...`)
@@ -680,13 +767,14 @@ app.post('/auth/login', async (req, res) => {
     const pwStatusCode = pwData?.status_code ?? 0
     const pwErrors = pwData?.errors
     if (pwStatusCode >= 400 || (Array.isArray(pwErrors) && pwErrors.length > 0)) {
-      const msg = pwErrors?.[0]?.message || pwData?.message || pwData?.localized_message || 'Incorrect password'
+      const internalMsg = pwErrors?.[0]?.message || pwData?.message || pwData?.localized_message || 'Incorrect password'
       recordAuthEvent('login_failed', {
         reason: 'invalid_password',
         email: normalizedEmail,
-        ip: clientIp(req),
+        ip,
+        detail: internalMsg,
       })
-      return res.status(401).json({ error: msg, reason: 'invalid_password' })
+      return res.status(401).json({ error: GENERIC_AUTH_ERROR, reason: 'auth_failed' })
     }
     // Also guard: if no redirect_uri at all, auth definitely failed
     const pwRedirectUri = pwData?.passwordauth?.redirect_uri
@@ -694,12 +782,13 @@ app.post('/auth/login', async (req, res) => {
       recordAuthEvent('login_failed', {
         reason: 'missing_redirect_uri',
         email: normalizedEmail,
-        ip: clientIp(req),
+        ip,
       })
-      return res.status(401).json({ error: 'Authentication failed. No redirect URI.', reason: 'missing_redirect_uri' })
+      return res.status(401).json({ error: GENERIC_AUTH_ERROR, reason: 'auth_failed' })
     }
 
     const isBlockSessions = pwRedirectUri.includes('block-sessions')
+    let sessionTerminated = false
 
     try {
       await client.get(pwRedirectUri, {
@@ -711,10 +800,16 @@ app.post('/auth/login', async (req, res) => {
 
     // Terminate using the correct endpoint for this flow
     if (isBlockSessions) {
-      await client.delete(
+      const delResp = await client.delete(
         `${BASE}/accounts/p/${ORG}/webclient/v1/announcement/pre/blocksessions`,
         { headers: { ...headers(), 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }, validateStatus: () => true }
       )
+      sessionTerminated = delResp.status < 400
+      recordAuthEvent('block_sessions_cleared', {
+        email: normalizedEmail,
+        ip,
+        detail: `status=${delResp.status}`,
+      })
       await client.get(
         `${BASE}/accounts/p/${ORG}/preannouncement/block-sessions/next`,
         { params: { status: '2', serviceurl: SERVICE_URL }, headers: headers(), maxRedirects: 5, validateStatus: () => true }
@@ -790,7 +885,7 @@ app.post('/auth/login', async (req, res) => {
       ip: clientIp(req),
     })
     lastLoginSuccessAt = new Date().toISOString()
-    res.json({ success: true, sessionToken, trusted: Boolean(trusted), expiresAt: now + ttl })
+    res.json({ success: true, sessionToken, trusted: Boolean(trusted), expiresAt: now + ttl, sessionTerminated })
   } catch (err) {
     console.error('Login error:', err.message)
     if (isTimeoutError(err)) {
@@ -999,16 +1094,25 @@ app.use('/proxy', async (req, res) => {
       ...(SRM_HTTPS_AGENT ? { httpsAgent: SRM_HTTPS_AGENT } : {}),
       timeout: PROXY_TIMEOUT_MS,
       maxRedirects: 5,
+      // Always fetch as bytes so binary endpoints (e.g. profile-photo
+      // download-file) are forwarded verbatim. Text endpoints still work
+      // because the client uses `await resp.text()` which utf-8 decodes the
+      // Buffer.
+      responseType: 'arraybuffer',
       validateStatus: () => true,
     })
 
-    console.log(`[proxy] ${path} → status ${resp.status}, size ${JSON.stringify(resp.data || '').length}`)
     const ct = resp.headers['content-type'] || 'text/html'
+    const isTextual = /^(text\/|application\/(json|xml|xhtml))/i.test(ct)
+    const bodyAsString = isTextual && Buffer.isBuffer(resp.data)
+      ? resp.data.toString('utf8')
+      : (typeof resp.data === 'string' ? resp.data : '')
+    console.log(`[proxy] ${path} → status ${resp.status}, size ${resp.data?.length ?? 0}`)
     if (path.startsWith('/notifications/getcount') && resp.status === 404) {
       console.log('[proxy] notifications count endpoint missing upstream - returning 0')
       return res.status(200).json({ count: 0 })
     }
-    if (resp.status === 401 || hasUpstreamAuthDrift(ct, resp.data)) {
+    if (resp.status === 401 || hasUpstreamAuthDrift(ct, bodyAsString)) {
       await deleteSession(token)
       recordAuthEvent('session_invalid', {
         reason: 'upstream_auth_drift',
@@ -1022,6 +1126,7 @@ app.use('/proxy', async (req, res) => {
 
     res.status(resp.status)
     res.set('Content-Type', ct)
+    res.set('Cache-Control', 'private, no-store')
     res.send(resp.data)
   } catch (err) {
     console.error('[proxy] error:', err.message)

@@ -9,6 +9,30 @@ declare global {
 }
 
 const BOOTSTRAP_RECOVERY_KEY = 'arch.bootstrap.recovered'
+const DEV_SW_KILL_KEY = 'arch.dev.sw-killed.v1'
+
+// In dev mode, ALWAYS unregister any leftover service worker from a previous
+// production build (or an older dev-dist/sw.js). Stale SWs are the #1 cause of
+// "I still see the old page" during local development. Runs once per tab.
+if (import.meta.env.DEV && typeof window !== 'undefined') {
+  const alreadyKilled = sessionStorage.getItem(DEV_SW_KILL_KEY) === '1'
+  if (!alreadyKilled && 'serviceWorker' in navigator) {
+    navigator.serviceWorker.getRegistrations().then(async (regs) => {
+      if (regs.length === 0) {
+        sessionStorage.setItem(DEV_SW_KILL_KEY, '1')
+        return
+      }
+      await Promise.all(regs.map((r) => r.unregister()))
+      if ('caches' in window) {
+        const keys = await caches.keys()
+        await Promise.all(keys.map((k) => caches.delete(k)))
+      }
+      sessionStorage.setItem(DEV_SW_KILL_KEY, '1')
+      console.warn('[arch] Unregistered stale service worker(s) — reloading for fresh dev build.')
+      window.location.reload()
+    }).catch(() => {})
+  }
+}
 const DEV_CSS_FALLBACK_ATTR = 'data-arch-dev-css-fallback'
 const DEV_VITE_STYLE_SELECTOR = 'style[data-vite-dev-id]'
 const DEV_SRC_INDEX_CSS_ID_RE = /(?:^|[\\/])src[\\/]index\.css(?:$|\?)/
@@ -93,21 +117,37 @@ function renderBootstrapFallback(error: unknown) {
   const host = document.getElementById('root')
   if (!host) return
   const detail = error instanceof Error ? error.message : String(error)
-  host.innerHTML = `
-    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:#000;color:#f2f2f7;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text','Helvetica Neue',Arial,sans-serif;">
-      <div style="width:min(92vw,430px);padding:18px;border:1px solid rgba(255,255,255,0.14);border-radius:16px;background:rgba(255,255,255,0.06);box-shadow:0 18px 40px rgba(0,0,0,0.35);">
-        <h1 style="margin:0 0 8px;font-size:20px;line-height:1.15;">Arch failed to start</h1>
-        <p style="margin:0 0 12px;font-size:13px;line-height:1.45;color:rgba(242,242,247,0.82);">
-          The app could not boot on this device state. You can retry immediately or clear local app caches and try again.
-        </p>
-        <pre style="margin:0 0 12px;padding:10px 11px;border-radius:10px;border:1px solid rgba(255,255,255,0.14);background:rgba(0,0,0,0.42);font-size:11px;line-height:1.4;white-space:pre-wrap;word-break:break-word;color:rgba(242,242,247,0.86);">${escapeHtml(detail)}</pre>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button id="arch-boot-retry" style="border:0;border-radius:999px;padding:9px 14px;font-size:12px;font-weight:700;background:#ffffff;color:#111;cursor:pointer;">Reload</button>
-          <button id="arch-boot-reset" style="border:1px solid rgba(255,255,255,0.24);border-radius:999px;padding:9px 14px;font-size:12px;font-weight:700;background:transparent;color:#f2f2f7;cursor:pointer;">Clear cache + reload</button>
-        </div>
-      </div>
-    </div>
-  `
+  // Build via DOM (textContent) — never innerHTML untrusted strings.
+  host.textContent = ''
+  const wrap = document.createElement('div')
+  wrap.setAttribute('style', "min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;background:#000;color:#f2f2f7;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text','Helvetica Neue',Arial,sans-serif;")
+  const card = document.createElement('div')
+  card.setAttribute('style', 'width:min(92vw,430px);padding:18px;border:1px solid rgba(255,255,255,0.14);border-radius:16px;background:rgba(255,255,255,0.06);box-shadow:0 18px 40px rgba(0,0,0,0.35);')
+  const h = document.createElement('h1')
+  h.setAttribute('style', 'margin:0 0 8px;font-size:20px;line-height:1.15;')
+  h.textContent = 'Arch failed to start'
+  const p = document.createElement('p')
+  p.setAttribute('style', 'margin:0 0 12px;font-size:13px;line-height:1.45;color:rgba(242,242,247,0.82);')
+  p.textContent = 'The app could not boot on this device state. You can retry immediately or clear local app caches and try again.'
+  const pre = document.createElement('pre')
+  pre.setAttribute('style', 'margin:0 0 12px;padding:10px 11px;border-radius:10px;border:1px solid rgba(255,255,255,0.14);background:rgba(0,0,0,0.42);font-size:11px;line-height:1.4;white-space:pre-wrap;word-break:break-word;color:rgba(242,242,247,0.86);')
+  pre.textContent = detail
+  const row = document.createElement('div')
+  row.setAttribute('style', 'display:flex;gap:8px;flex-wrap:wrap;')
+  const retry = document.createElement('button')
+  retry.id = 'arch-boot-retry'
+  retry.setAttribute('style', 'border:0;border-radius:999px;padding:9px 14px;font-size:12px;font-weight:700;background:#ffffff;color:#111;cursor:pointer;')
+  retry.textContent = 'Reload'
+  const reset = document.createElement('button')
+  reset.id = 'arch-boot-reset'
+  reset.setAttribute('style', 'border:1px solid rgba(255,255,255,0.24);border-radius:999px;padding:9px 14px;font-size:12px;font-weight:700;background:transparent;color:#f2f2f7;cursor:pointer;')
+  reset.textContent = 'Clear cache + reload'
+  row.append(retry, reset)
+  card.append(h, p, pre, row)
+  wrap.append(card)
+  host.append(wrap)
+  // escapeHtml retained for any future use; kept to avoid unused-export churn.
+  void escapeHtml
   const retryBtn = document.getElementById('arch-boot-retry')
   retryBtn?.addEventListener('click', () => window.location.reload())
   const resetBtn = document.getElementById('arch-boot-reset')

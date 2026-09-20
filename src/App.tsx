@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Home, BarChart2, Clock3, CalendarDays, TrendingUp, User, UtensilsCrossed } from "lucide-react"
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Home, BarChart2, Clock3, CalendarDays, TrendingUp, User, UtensilsCrossed, Check } from "lucide-react"
 import { CartesianGrid, Area, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
 import {
   classesSafeToMiss, classesNeededToReach,
@@ -7,17 +7,31 @@ import {
 import type { AttendanceCourse, InternalMark, StudentInfo } from "./data/real-data"
 import { DAY_KEYS, DAY_LONG_LABEL, DAY_SHORT_LABEL, MEAL_LABEL, MEAL_WINDOW_TEXT, getActiveMeal, getDayKeyFromDate, getDayTypeFromDate, getMenuForDay, isNonVegItem } from "./data/mess-schedule"
 import type { MessDayKey, MessMealKey } from "./data/mess-schedule"
-import { BATCH2_TIMETABLE, getTodayClasses, fetchAttendance, fetchCurrentDayOrder, fetchProfilePatch, fetchTimetableProfileAndCredits, fetchAcademicCalendarEvents, fetchNotificationCount, fetchPushDesignStatus, fetchPushPublicKey, savePushSubscription, fetchAdminSelfMetrics, loginUser, logoutUser, getSessionToken } from "./lib/api"
+import { BATCH2_TIMETABLE, getTodayClasses, fetchAttendance, fetchCurrentDayOrder, fetchProfilePatch, fetchTimetableProfileAndCredits, fetchAcademicCalendarEvents, fetchNotificationCount, fetchPushDesignStatus, fetchPushPublicKey, savePushSubscription, fetchAdminSelfMetrics, fetchStudentPhotoUrl, loginUser, logoutUser, getSessionToken, tryAutoRelogin } from "./lib/api"
 import type { AcademicCalendarEvent, AdminSelfMetrics } from "./lib/api"
 import * as sessionStorageLib from "./lib/storage"
+import { persistCredentials, clearCredentials, isAutoReloginOptedIn, setAutoReloginOptIn, hasStoredCredentials } from "./lib/credentials"
 import { ExpandableNav } from "./components/expandable-tabs"
-import { AcademiaLogo } from "./components/AcademiaLogo"
 import { HeroBadge } from "./components/HeroBadge"
 import { GradualBlur } from "./components/GradualBlur"
 import Grainient from "./components/Grainient"
 import { AnimatedShinyText } from "./components/AnimatedShinyText"
 import { LightRays } from "./components/LightRays"
+import BlurText from "./components/BlurText"
+import { AcademiaLogo } from "./components/AcademiaLogo"
+import { LanyardErrorBoundary, StaticCardFallback } from "./components/Lanyard"
+import type { CardData, CardState } from "./components/Lanyard"
 import changelogEntriesData from "./data/changelog.json"
+
+// Heavy Lanyard 3D scene is code-split into the `lanyard-vendor` chunk and only
+// fetched on the login screen. Imports are eager-prefetched as soon as the
+// login screen mounts so the chunk is ready by the time the user reaches the
+// password step.
+const LazyLanyard = lazy(() => import("./components/Lanyard/Lanyard"))
+function prefetchLanyardChunk() {
+  // Side-effect import; ignore the returned promise.
+  void import("./components/Lanyard/Lanyard")
+}
 
 const loadSessionSnapshot = sessionStorageLib.loadSessionSnapshot
 const persistSessionSnapshot = sessionStorageLib.persistSessionSnapshot
@@ -134,7 +148,7 @@ const SPECIAL_FRUIT_SURPRISES = ['✨', '🍉', '🍍', '🥭', '🍓'] as const
 const QUICK_DOCK_STORAGE_KEY = 'arch.quickDockTabs.v1'
 const FLOATING_LAYOUT_STORAGE_KEY = 'arch.floatingDockLayout.v1'
 const FLOATING_TAB_ORDER: Screen[] = ['home', 'attendance', 'schedule', 'calendar', 'marks', 'mess', 'profile']
-const FLOATING_DOCK_DEFAULT_ORDER: Screen[] = ['home', 'attendance', 'schedule', 'calendar', 'profile']
+const FLOATING_DOCK_DEFAULT_ORDER: Screen[] = ['home', 'attendance', 'schedule', 'calendar', 'marks', 'profile']
 const FLOATING_TAB_KEYS = new Set<Screen>(['home', 'attendance', 'schedule', 'calendar', 'marks', 'mess', 'profile'])
 interface BeforeInstallPromptEvent extends Event {
   prompt(): Promise<void>
@@ -260,7 +274,11 @@ function useCountUp(target: number, duration = 900): number {
       const progress = Math.min((ts - start) / duration, 1)
       // easeOutCubic
       const eased = 1 - Math.pow(1 - progress, 3)
-      setVal(parseFloat((eased * target).toFixed(1)))
+      // Snap to the exact target on the final frame so the displayed number is
+      // the raw value (no rounding loss). Intermediate frames stay smooth via
+      // a 1-decimal quantization that only affects the animation, not the
+      // final settled value.
+      setVal(progress >= 1 ? target : parseFloat((eased * target).toFixed(1)))
       if (progress < 1) raf = requestAnimationFrame(step)
     }
     raf = requestAnimationFrame(step)
@@ -725,10 +743,24 @@ function applyCourseSlotOverrides(
 }
 
 function overallPct(courses: AttendanceCourse[]): number {
-  const conducted = courses.reduce((s, c) => s + c.conducted, 0)
-  const absent = courses.reduce((s, c) => s + c.absent, 0)
-  if (!conducted) return 0
-  return Math.round(((conducted - absent) / conducted) * 1000) / 10
+  if (!courses.length) return 0
+  // Use the server-reported percent weighted by conducted hours.
+  // This avoids being fooled when the absent column is missing/zeroed in the
+  // source HTML (the portal comments it out in recent revisions).
+  const totalConducted = courses.reduce((s, c) => s + c.conducted, 0)
+  if (totalConducted > 0) {
+    return courses.reduce((s, c) => s + c.percent * c.conducted, 0) / totalConducted
+  }
+  // Fallback: unweighted average of server-reported percentages.
+  return courses.reduce((s, c) => s + c.percent, 0) / courses.length
+}
+
+// Render a number with full precision, no rounding or padding. Trailing
+// zeros are not added; whatever JS stringifies for the underlying float is
+// what the user sees. Non-finite or null inputs render as '0'.
+function formatExactNumber(n: number | null | undefined): string {
+  if (n === null || n === undefined || !Number.isFinite(n)) return '0'
+  return String(n)
 }
 
 function attnClass(pct: number): "danger" | "ok" {
@@ -899,6 +931,13 @@ const Icons = {
       <polyline points="22,6 12,13 2,6"/>
     </svg>
   ),
+  ExternalLink: () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+      <polyline points="15 3 21 3 21 9"/>
+      <line x1="10" y1="14" x2="21" y2="3"/>
+    </svg>
+  ),
   Phone: () => (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 2.18h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6.18 6.18l.95-.95a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>
@@ -1000,9 +1039,19 @@ function AttendanceDonut({ pct, animated }: { pct: number; animated: number }) {
         style={{ transition: 'stroke-dasharray 0.8s cubic-bezier(0.22,1,0.36,1)' }}
       />
       <text x="50" y="50" textAnchor="middle" dominantBaseline="central" className="att-donut-label">
-        {animated.toFixed(0)}%
+        {formatExactNumber(animated)}%
       </text>
     </svg>
+  )
+}
+
+// ─── Desktop page header (hidden on mobile via CSS) ───────────────────────────
+function DesktopPageHeader({ title, subtitle }: { title: string; subtitle?: string }) {
+  return (
+    <div className="desktop-screen-header">
+      <div className="dsh-title">{title}</div>
+      {subtitle && <div className="dsh-subtitle">{subtitle}</div>}
+    </div>
   )
 }
 
@@ -1095,6 +1144,7 @@ function CalendarScreen({ events, loading, error, onDayOrderSync }: {
 
   return (
     <>
+      <DesktopPageHeader title="Academic Calendar" />
       <div className="attn-hero">
         <div>
           <div className="stat-label">Academic Calendar</div>
@@ -1142,6 +1192,8 @@ function CalendarScreen({ events, loading, error, onDayOrderSync }: {
 
       {!loading && !error && (
         <>
+          <div className="calendar-desktop-grid">
+          <div className="calendar-desktop-left">
           <div className="calendar-month-nav">
             <button
               className="calendar-month-btn"
@@ -1199,6 +1251,9 @@ function CalendarScreen({ events, loading, error, onDayOrderSync }: {
             })}
           </div>
 
+          </div>{/* /calendar-desktop-left */}
+
+          <div className="calendar-desktop-right">
           <div className="section-header">
             <span className="section-title">{effectiveSelectedDate ? toPrettyDate(effectiveSelectedDate) : 'Events'}</span>
           </div>
@@ -1219,6 +1274,8 @@ function CalendarScreen({ events, loading, error, onDayOrderSync }: {
               ))}
             </div>
           )}
+          </div>{/* /calendar-desktop-right */}
+          </div>{/* /calendar-desktop-grid */}
         </>
       )}
       <div className="page-spacer" />
@@ -1237,32 +1294,63 @@ function LoginSpotlight({ compact = false }: { compact?: boolean }) {
 
 function LoginScreen({ onSuccess }: { onSuccess: (email: string) => void }) {
   const [step, setStep] = useState<LoginStep>("email")
-  const [isDesktop, setIsDesktop] = useState(() => {
-    if (typeof window === "undefined") return false
-    return window.matchMedia("(min-width: 900px)").matches
-  })
   const [emailInput, setEmailInput] = useState("")
   const normalizedEmail = normalizeLoginEmail(emailInput)
   const [password, setPassword] = useState("")
   const [showPw, setShowPw] = useState(false)
   const [trusted, setTrusted] = useState(true)
+  const [autoRelogin, setAutoRelogin] = useState<boolean>(() => {
+    // Default ON. Read existing opt-in so a returning user sees their choice.
+    try { return isAutoReloginOptedIn() || !localStorage.getItem('academia.credentials.optIn:seen') } catch { return true }
+  })
   const [loading, setLoading] = useState(false)
   const [authStepIdx, setAuthStepIdx] = useState(0)
   const [error, setError] = useState("")
+  const [cardState, setCardState] = useState<CardState>("blank")
   const inputRef = useRef<HTMLInputElement>(null)
+
+  // User opt-out for the Lanyard scene (low-end devices, debugging, motion
+  // sensitivity). `?nolanyard=1` query param hides the WebGL canvas; we still
+  // render the static card as a visual anchor.
+  const lanyardDisabled = useMemo(() => {
+    if (typeof window === "undefined") return false
+    return new URLSearchParams(window.location.search).has("nolanyard")
+  }, [])
+
+  const cardData = useMemo<CardData>(() => {
+    const local = emailLocalPart(normalizedEmail) || ""
+    // Derive a readable display name from the email local part.
+    // SRM NetIDs like "as6977" are IDs (contain digits) — show "Student" instead.
+    // Name-style emails like "john.doe" or "rahul" produce "John Doe" / "Rahul".
+    const parts = local.split(/[._-]+/).filter(Boolean)
+    const looksLikeName = parts.length > 1 || (parts.length === 1 && !/\d/.test(local) && local.length >= 3)
+    const displayName = local
+      ? looksLikeName
+        ? local.replace(/[._-]+/g, " ").replace(/\b\w/g, c => c.toUpperCase())
+        : "Student"
+      : "Welcome to Arch"
+    return {
+      name: cardState === "blank" ? "" : displayName,
+      regNo: cardState === "blank" ? "" : local.toUpperCase(),
+      program: cardState === "blank" ? "" : "B.Tech",
+      department: cardState === "blank" ? "" : "SRMIST",
+      year: "",
+      section: "",
+      semester: "",
+      email: normalizedEmail,
+      qrUrl: normalizedEmail ? `https://arch.app/u/${local}` : "arch",
+      validUntil: "May 2028",
+    }
+  }, [normalizedEmail, cardState])
+
+  // Prefetch the Lanyard chunk on mount so it is ready before the password step.
+  useEffect(() => {
+    if (!lanyardDisabled) prefetchLanyardChunk()
+  }, [lanyardDisabled])
 
   useEffect(() => {
     setTimeout(() => inputRef.current?.focus(), 80)
   }, [step])
-
-  useEffect(() => {
-    if (typeof window === "undefined") return
-    const media = window.matchMedia("(min-width: 900px)")
-    const onMediaChange = () => setIsDesktop(media.matches)
-    onMediaChange()
-    media.addEventListener("change", onMediaChange)
-    return () => media.removeEventListener("change", onMediaChange)
-  }, [])
 
   useEffect(() => {
     if (!loading) return
@@ -1280,22 +1368,67 @@ function LoginScreen({ onSuccess }: { onSuccess: (email: string) => void }) {
     setStep("password")
   }
 
+  const loginAbortRef = useRef<AbortController | null>(null)
+  useEffect(() => {
+    return () => {
+      loginAbortRef.current?.abort()
+    }
+  }, [])
+
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault()
     if (!password) return
     setError("")
+    setCardState("blank")
     setAuthStepIdx(0)
     setLoading(true)
+    // Cancel any in-flight login (e.g., rapid retry) before starting a new one.
+    loginAbortRef.current?.abort()
+    const controller = new AbortController()
+    loginAbortRef.current = controller
     try {
       const loginEmail = normalizeLoginEmail(emailInput)
-      const result = await loginUser(loginEmail, password, { trusted })
+      const result = await loginUser(loginEmail, password, { trusted, signal: controller.signal })
       if (result.success) {
         persistSessionSnapshot({ email: loginEmail, trusted, loginAt: Date.now() })
-        onSuccess(loginEmail)
+        // Persist credentials for silent re-auth on session expiry / Academia
+        // forcing the 2-session cap. The user opts in via the checkbox; the
+        // password is encrypted at rest with a non-extractable WebCrypto key.
+        if (autoRelogin) {
+          setAutoReloginOptIn(true)
+          persistCredentials(loginEmail, password).catch(() => { /* ignore */ })
+        } else {
+          setAutoReloginOptIn(false)
+          clearCredentials()
+        }
+        if (result.sessionTerminated) {
+          try { sessionStorage.setItem('arch.loginNotice', 'Signed out other devices to log you in.') } catch { /* ignore */ }
+        }
+        // Run the card fill-in animation, then hand off to the home screen.
+        // The user explicitly asked for a ~5s celebration so the Lanyard card
+        // fill animation is fully visible before the dashboard takes over.
+        // Reduced-motion users skip the celebration entirely.
+        const prefersReduced =
+          typeof window !== "undefined" &&
+          window.matchMedia("(prefers-reduced-motion: reduce)").matches
+        setCardState("filling")
+        const handoff = prefersReduced ? 0 : 5000
+        // Settle the card into its 'ready' pose roughly when the fill texture
+        // finishes drawing (~1.3s), then leave it on screen for the remainder
+        // of the 5-second window before navigating to home.
+        if (!prefersReduced) {
+          setTimeout(() => setCardState("ready"), 1300)
+        }
+        setTimeout(() => {
+          if (prefersReduced) setCardState("ready")
+          onSuccess(loginEmail)
+        }, handoff)
       } else {
+        setCardState("error")
         setError(result.error || "Login failed. Check credentials.")
       }
     } catch {
+      setCardState("error")
       setError("Network error — make sure the server is running.")
     } finally {
       setLoading(false)
@@ -1303,32 +1436,65 @@ function LoginScreen({ onSuccess }: { onSuccess: (email: string) => void }) {
   }
 
   return (
-    <div className={`login-screen ${step === "password" ? "password-step" : ""} ${isDesktop ? "desktop-rays" : ""}`}>
-      {isDesktop && (
-        <div style={{ position: "absolute", inset: 0, zIndex: 0 }}>
-          <LightRays
-            raysOrigin="top-center"
-            raysColor="#00ffff"
-            raysSpeed={0.5}
-            lightSpread={1}
-            rayLength={2.2}
-            followMouse={true}
-            mouseInfluence={0.4}
-            noiseAmount={0.1}
-            distortion={0.05}
-            pulsating={false}
-            fadeDistance={0.7}
-            saturation={0.4}
-          />
-        </div>
-      )}
+    <div className={`login-screen ${step === "password" ? "password-step" : ""} desktop-rays`}>
+      <div className="login-lightrays" aria-hidden>
+        <LightRays
+          raysOrigin="top-center"
+          raysColor="#ffffff"
+          raysSpeed={0.6}
+          lightSpread={0.3}
+          rayLength={3}
+          followMouse={true}
+          mouseInfluence={0.1}
+          noiseAmount={0}
+          distortion={0}
+          className="custom-rays"
+          pulsating={false}
+          fadeDistance={1.2}
+          saturation={0.6}
+        />
+      </div>
       <LoginSpotlight compact={step === "password"} />
+      {cardState === "ready" && (
+        <div className="login-ready-flash" aria-hidden />
+      )}
+      <div
+        className={`login-lanyard-slot login-lanyard-slot--${step}${cardState === "ready" ? " login-lanyard-slot--ready" : ""}`}
+        aria-hidden={cardState === "blank" && !loading}
+      >
+        {lanyardDisabled ? (
+          <StaticCardFallback state={cardState} data={cardData} />
+        ) : (
+          <LanyardErrorBoundary fallback={<StaticCardFallback state={cardState} data={cardData} />}>
+            <Suspense fallback={<StaticCardFallback state={cardState} data={cardData} />}>
+              <LazyLanyard
+                position={[0, 0, 20]}
+                gravity={[0, -40, 0]}
+                fov={14}
+                transparent
+                state={cardState}
+                data={cardData}
+              />
+            </Suspense>
+          </LanyardErrorBoundary>
+        )}
+      </div>
+      <div className="login-right-panel" aria-hidden>
+        <div className="lrp-header">Why Arch?</div>
+        <ul className="lrp-list">
+          <li><Check size={13} strokeWidth={2.5} className="lrp-check" /><span>Made for the SRM community</span></li>
+          <li><Check size={13} strokeWidth={2.5} className="lrp-check" /><span>Feedback shapes every update</span></li>
+          <li><Check size={13} strokeWidth={2.5} className="lrp-check" /><span>Always free — no paywalls, ever</span></li>
+          <li><Check size={13} strokeWidth={2.5} className="lrp-check" /><span>No ads, no tracking, no nonsense</span></li>
+          <li><Check size={13} strokeWidth={2.5} className="lrp-check" /><span>Open &amp; transparent by design</span></li>
+          <li><Check size={13} strokeWidth={2.5} className="lrp-check" /><span>Your data stays yours</span></li>
+        </ul>
+        <div className="lrp-tagline">Arch will always be free and you will never ever be forced to pay.</div>
+      </div>
       <div className="login-hero">
-        <div className="login-logo" aria-hidden>
+        <div className="login-logo login-logo--mobile" aria-hidden>
           <AcademiaLogo />
         </div>
-        <div className="login-title-big">Arch</div>
-        <div className="login-subtitle">SRM Student Portal</div>
         <HeroBadge
           className="login-alpha-hero-badge"
           text="Alpha version"
@@ -1337,6 +1503,18 @@ function LoginScreen({ onSuccess }: { onSuccess: (email: string) => void }) {
           highlighted
           icon={<span className="hero-badge-alpha" aria-hidden>α</span>}
         />
+        <BlurText
+          text="Arch"
+          animateBy="letters"
+          direction="top"
+          delay={60}
+          stepDuration={0.38}
+          className="login-title-big"
+        />
+        <div className="login-subtitle">SRM Student Portal</div>
+        <p className="login-tagline">
+          Access your academic records, manage courses, and connect with the university ecosystem through a modern, unified platform.
+        </p>
         <div className="login-mobile-note">Currently optimized for mobile view.</div>
         <div className="login-community-note">
           Made for the SRM community,{" "}
@@ -1424,6 +1602,13 @@ function LoginScreen({ onSuccess }: { onSuccess: (email: string) => void }) {
               <div>
                 <div className="field-checkbox-label">Stay signed in</div>
                 <div className="field-checkbox-sub">Keep me logged in for 180 days</div>
+              </div>
+            </label>
+            <label className="field-checkbox-row">
+              <input type="checkbox" checked={autoRelogin} onChange={e => setAutoRelogin(e.target.checked)} />
+              <div>
+                <div className="field-checkbox-label">Auto re-login when Academia signs me out</div>
+                <div className="field-checkbox-sub">Password is encrypted locally and used only to re-authenticate when SRM’s 2-session cap or token expiry kicks you out.</div>
               </div>
             </label>
             <button className="btn-primary" type="submit" disabled={loading}>
@@ -1546,9 +1731,31 @@ function HomeScreen({ student, fallbackName, attendance, timetableByDay, refresh
         </div>
       </div>
 
+      {/* Quick stats — desktop only */}
+      <div className="home-stats-row">
+        <div className={`home-stat-card${overall < 75 ? ' stat-danger' : overall < 85 ? ' stat-warning' : ' stat-safe'}`}>
+          <div className="home-stat-label">Attendance</div>
+          <div className="home-stat-value">{dataLoading ? '—' : `${formatExactNumber(animatedOverall)}%`}</div>
+          <div className="home-stat-sub">{attendance.length} course{attendance.length !== 1 ? 's' : ''}</div>
+        </div>
+        <div className={`home-stat-card${below.length > 0 ? ' stat-danger' : ' stat-safe'}`}>
+          <div className="home-stat-label">At Risk</div>
+          <div className="home-stat-value">{dataLoading ? '—' : below.length}</div>
+          <div className="home-stat-sub">{below.length > 0 ? 'need attention' : 'all clear'}</div>
+        </div>
+        <div className="home-stat-card stat-neutral">
+          <div className="home-stat-label">Today</div>
+          <div className="home-stat-value">{dataLoading ? '—' : todayClasses.length}</div>
+          <div className="home-stat-sub">{todayClasses.length === 1 ? 'class' : 'classes'}</div>
+        </div>
+      </div>
+
+      <div className="home-desktop-grid">
+      <div className="home-desktop-left">
+
       {/* Next / Current class card */}
       {classStatus && (
-        <div style={{ padding: "0 16px 14px" }}>
+        <div className="next-class-card-wrap">
           <div className={`next-class-card${classStatus.type === 'now' ? ' live' : ''}`}>
             <div className="next-class-label">
               {classStatus.type === 'now' ? (
@@ -1571,8 +1778,11 @@ function HomeScreen({ student, fallbackName, attendance, timetableByDay, refresh
         </div>
       )}
 
+      </div>{/* /home-desktop-left */}
+
+      <div className="home-desktop-right">
       {/* Attendance ring */}
-      <div style={{ padding: "0 16px" }}>
+      <div>
         {dataLoading ? (
           <div className="att-ring-row">
             <div className="skeleton-circle" />
@@ -1596,7 +1806,7 @@ function HomeScreen({ student, fallbackName, attendance, timetableByDay, refresh
             <div className="att-ring-stats-row">
               <div className="att-ring-stat">
                 <div className="stat-label">Attendance</div>
-                <div className={`att-ring-val ${attnClass(overall)}`}>{animatedOverall.toFixed(1)}%</div>
+                <div className={`att-ring-val ${attnClass(overall)}`}>{formatExactNumber(animatedOverall)}%</div>
                 <div className="stat-sub">{attendance.length} courses</div>
               </div>
               <div className="att-ring-divider" />
@@ -1615,11 +1825,13 @@ function HomeScreen({ student, fallbackName, attendance, timetableByDay, refresh
         <div className="below-pills-row">
           {below.map(c => (
             <span key={c.code + c.type} className="below-pill">
-              {c.title} ({c.code}) · {c.percent.toFixed(0)}%
+              {c.title} ({c.code}) · {formatExactNumber(c.percent)}%
             </span>
           ))}
         </div>
       )}
+      </div>{/* /home-desktop-right */}
+      </div>{/* /home-desktop-grid */}
 
       {/* Today schedule */}
       <div className="sched-header">
@@ -1791,6 +2003,7 @@ function AttendanceScreen({
 
   return (
     <>
+      <DesktopPageHeader title="Attendance" />
       {parserStatus === 'structure_mismatch' && (
         <div className="error-banner" style={{ margin: '0 16px 10px' }}>
           {parserHint || 'Portal data may have changed — refresh or check academia.srmist.edu.in directly'}
@@ -1802,7 +2015,7 @@ function AttendanceScreen({
           <div className="attendance-overview-main">
             <div className="attendance-overview-kicker">Overall attendance</div>
             <div className={`attendance-overview-pct ${attnClass(overall)}`}>
-              {animatedOverall.toFixed(1)}%
+              {formatExactNumber(animatedOverall)}%
             </div>
           </div>
           <div className="attendance-overview-side">
@@ -1893,11 +2106,11 @@ function AttendanceScreen({
                     </div>
                     <div className="attendance-planner-stat">
                       <span className="k">Projected</span>
-                      <span className={`v ${projectedClass}`}>{plannerModel.projectedPct.toFixed(1)}%</span>
+                      <span className={`v ${projectedClass}`}>{formatExactNumber(plannerModel.projectedPct)}%</span>
                     </div>
                     <div className="attendance-planner-stat">
                       <span className="k">After recovery</span>
-                      <span className={`v ${attnClass(plannerModel.recoveryPct)}`}>{plannerModel.recoveryPct.toFixed(1)}%</span>
+                      <span className={`v ${attnClass(plannerModel.recoveryPct)}`}>{formatExactNumber(plannerModel.recoveryPct)}%</span>
                     </div>
                   </div>
                   <div className={`attendance-planner-note ${projectedClass}`}>
@@ -1931,7 +2144,10 @@ function AttendanceScreen({
 }
 
 function MarksScreen({ attendance, marks }: { attendance: AttendanceCourse[]; marks: InternalMark[] }) {
-  const formatMarkValue = (value: number) => (Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1))
+  // No rounding on marks display — show the exact value the website returned
+  // (or the exact derived ratio). formatMarkValue keeps it readable when the
+  // underlying number is an integer, but never truncates fractional digits.
+  const formatMarkValue = (value: number) => formatExactNumber(value)
 
   const renderMarksTooltip = (tooltipProps: unknown) => {
     if (!tooltipProps || typeof tooltipProps !== 'object') return null
@@ -1959,7 +2175,7 @@ function MarksScreen({ attendance, marks }: { attendance: AttendanceCourse[]; ma
       <div className="marks-tooltip">
         <div className="marks-tooltip-label">{String(label ?? '')}</div>
         <div className="marks-tooltip-value">
-          {formatMarkValue(scored)}/{formatMarkValue(max)} ({pct.toFixed(1)}%)
+          {formatMarkValue(scored)}/{formatMarkValue(max)} ({formatExactNumber(pct)}%)
         </div>
         {pct < 50 && <div className="marks-tooltip-fail">Below pass threshold</div>}
       </div>
@@ -2043,9 +2259,12 @@ function MarksScreen({ attendance, marks }: { attendance: AttendanceCourse[]; ma
   const renderRow = (row: (typeof courseRows)[number]) => {
     const chartData = row.tests.map((test) => ({
       label: test.label,
-      pct: Number(test.pct.toFixed(1)),
-      scored: Number(test.scored.toFixed(1)),
-      max: Number(test.max.toFixed(1)),
+      // Recharts needs numeric values for the y-axis; we feed it the raw
+      // (unrounded) numbers. Tooltips and labels are rendered separately
+      // using formatExactNumber, so no precision is lost on display.
+      pct: test.pct,
+      scored: test.scored,
+      max: test.max,
     }))
     const plotData = chartData.length > 0
       ? [{ label: '__origin__', pct: 0, scored: 0, max: 0, isOrigin: true }, ...chartData]
@@ -2176,7 +2395,7 @@ function MarksScreen({ attendance, marks }: { attendance: AttendanceCourse[]; ma
                       role="listitem"
                     >
                       <span>{test.label}</span>
-                      <strong>{test.scored.toFixed(1)}/{test.max.toFixed(1)}</strong>
+                      <strong>{formatExactNumber(test.scored)}/{formatExactNumber(test.max)}</strong>
                     </div>
                   ))}
                 </div>
@@ -2190,12 +2409,13 @@ function MarksScreen({ attendance, marks }: { attendance: AttendanceCourse[]; ma
 
   return (
     <>
+      <DesktopPageHeader title="Internal Marks" />
       <div className="attendance-overview-card marks-summary-card">
         <div className="attendance-overview-top">
           <div className="attendance-overview-main">
             <div className="attendance-overview-kicker">Internal marks summary</div>
             <div className="attendance-overview-pct">
-              {totalScored.toFixed(1)}/{totalPossible || 0}
+              {formatExactNumber(totalScored)}/{totalPossible || 0}
             </div>
           </div>
           <div className="attendance-overview-side">
@@ -2255,16 +2475,22 @@ function CourseRow({ course }: { course: AttendanceCourse }) {
           <div className="course-item-title">{course.title}</div>
           <div className="course-item-faculty">{course.faculty}</div>
         </div>
-        <div className={`course-item-pct ${cls}`}>{course.percent.toFixed(1)}%</div>
+        <div className={`course-item-pct ${cls}`}>{formatExactNumber(course.percent)}%</div>
       </div>
       <div className="attn-track">
         <div className="attn-fill" style={{ width: `${Math.min(100, course.percent)}%` }} />
       </div>
-      <div className="attn-hours-row">
-        <span className="attn-hour-chip total">Total {course.conducted}h</span>
-        <span className="attn-hour-chip present">Present {presentHours}h</span>
-        <span className="attn-hour-chip absent">Absent {course.absent}h</span>
-      </div>
+      {course.conducted > 0 ? (
+        <div className="attn-hours-row">
+          <span className="attn-hour-chip total">Total {course.conducted}h</span>
+          <span className="attn-hour-chip present">Present {presentHours}h</span>
+          <span className="attn-hour-chip absent">Absent {course.absent}h</span>
+        </div>
+      ) : course.percent > 0 ? (
+        <div className="attn-hours-row">
+          <span className="attn-hour-chip total">Attendance {formatExactNumber(course.percent)}%</span>
+        </div>
+      ) : null}
       <div className={`attn-guidance-card single ${cls === 'ok' ? 'ok' : 'danger'}`}>
         <span className="attn-guidance-label">{guidanceLabel}</span>
         <span className="attn-guidance-value">{guidanceValue}</span>
@@ -2288,6 +2514,7 @@ function ScheduleScreen({ initialDay, attendance, timetableByDay, onOpenCalendar
 
   return (
     <>
+      <DesktopPageHeader title="Schedule" />
       <div className="section-header" style={{ paddingBottom: 12 }}>
         <span className="section-title">Timetable · AY 2025-26</span>
         <button className="calendar-launch-btn" onClick={onOpenCalendar}>Open Calendar</button>
@@ -2374,12 +2601,24 @@ function ScheduleScreen({ initialDay, attendance, timetableByDay, onOpenCalendar
 }
 
 // ─── Profile ───────────────────────────────────────────────────────────────────
-function ProfileAvatar({ name }: { name: string }) {
+function ProfileAvatar({ name, photoUrl }: { name: string; photoUrl?: string | null }) {
+  const [photoFailed, setPhotoFailed] = useState(false)
+  if (photoUrl && !photoFailed) {
+    return (
+      <img
+        className="profile-avatar-img"
+        src={photoUrl}
+        alt={firstName(name) || 'Profile photo'}
+        onError={() => setPhotoFailed(true)}
+      />
+    )
+  }
   return <div className="profile-avatar">{firstName(name)[0] || '?'}</div>
 }
 
 function ProfileScreen({
   student,
+  photoUrl,
   theme,
   onTheme,
   onLogout,
@@ -2392,6 +2631,7 @@ function ProfileScreen({
   adminMetricsError,
 }: {
   student: StudentInfo
+  photoUrl: string | null
   theme: Theme
   onTheme: (t: Theme) => void
   onLogout: () => void
@@ -2405,8 +2645,9 @@ function ProfileScreen({
 }) {
   return (
     <>
+      <DesktopPageHeader title="Profile" />
       <div className="profile-hero">
-        <ProfileAvatar name={student.name} />
+        <ProfileAvatar name={student.name} photoUrl={photoUrl} />
         <div>
           <div className="profile-name">{toTitle(student.name)}</div>
           <div className="profile-reg">{student.regNo}</div>
@@ -2569,6 +2810,15 @@ function ProfileScreen({
         <span className="section-title">Support</span>
       </div>
       <div className="btn-row">
+        <a
+          className="btn-list-item secondary"
+          href="https://academia.srmist.edu.in/#Course_Feedback"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <Icons.ExternalLink />
+          Course feedback (Academia)
+        </a>
         <a className="btn-list-item secondary" href={FEEDBACK_MAILTO}>
           <Icons.Mail />
           Send feedback
@@ -2664,6 +2914,7 @@ function MessScreen() {
 
   return (
     <>
+      <DesktopPageHeader title="Mess Schedule" />
       <div className="section-header">
         <span className="section-title">Mess</span>
         <span className="section-action">{DAY_LONG_LABEL[selectedDay]}</span>
@@ -2873,6 +3124,35 @@ export default function App() {
   }, [bootCache])
   const [loggedIn, setLoggedIn] = useState(() => !!getSessionToken())
   const [loggedEmail, setLoggedEmail] = useState(() => bootEmail)
+  // Cold-boot silent re-login: if the user previously opted in and we still
+  // have an encrypted password vault on disk, attempt to restore the session
+  // before showing the login screen. This is what makes the app feel "always
+  // logged in" the way SRM's own portal doesn't (because of its 2-session cap).
+  const [bootAutoRelogin, setBootAutoRelogin] = useState<boolean>(
+    () => !getSessionToken() && isAutoReloginOptedIn() && hasStoredCredentials()
+  )
+  useEffect(() => {
+    if (!bootAutoRelogin) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const ok = await tryAutoRelogin()
+        if (cancelled) return
+        if (ok) {
+          // Mirror what LoginScreen.onSuccess does at minimum: flip loggedIn
+          // and let the existing post-login effects rehydrate caches.
+          const email = loadSessionSnapshot()?.email ?? loggedEmail
+          if (email) setLoggedEmail(email)
+          setLoggedIn(true)
+        }
+      } catch { /* fall through to login screen */ }
+      finally {
+        if (!cancelled) setBootAutoRelogin(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [bootAutoRelogin, loggedEmail])
+  const [loginNotice, setLoginNotice] = useState<string>("")
   const [screen, setScreen] = useState<Screen>("home")
   const [globalQuickMenuOpen, setGlobalQuickMenuOpen] = useState(false)
   const [dockDropActive, setDockDropActive] = useState(false)
@@ -2936,6 +3216,9 @@ export default function App() {
   const [adminMetrics, setAdminMetrics] = useState<AdminSelfMetrics | null>(null)
   const [adminMetricsLoading, setAdminMetricsLoading] = useState(false)
   const [adminMetricsError, setAdminMetricsError] = useState('')
+  const [profilePhotoUrl, setProfilePhotoUrl] = useState<string | null>(() => {
+    try { return window.localStorage.getItem('academia.profilePhotoUrl') } catch { return null }
+  })
   const [attendanceAlertPermission, setAttendanceAlertPermission] = useState<NotificationPermission | 'unsupported'>(() => {
     if (!('Notification' in window)) return 'unsupported'
     return Notification.permission
@@ -2968,14 +3251,49 @@ export default function App() {
     if (isCurrentRuntime) return
 
     const resetForVersionUpdate = async () => {
-      const previousTheme = localStorage.getItem('theme')
       const hadPreviousRuntime = Boolean(previousVersion || previousBuild)
+
+      // Preserve trusted-device auth material across the reset. A version bump
+      // must not silently log users out or destroy the encrypted credential
+      // vault (ciphertext + opt-in flag) that powers silent auto re-login —
+      // otherwise every release breaks the "stay signed in" promise.
+      // Everything else (planner HTML, tab caches, attendance snapshots) is
+      // intentionally purged so stale cross-version payloads cannot linger.
+      const PRESERVED_LOCAL_KEYS = [
+        'theme',
+        'academia.token',
+        'academia.credentials.v1',
+        'academia.credentials.optIn',
+        'academia.credentials.optIn:seen',
+        'academia.trusted-session',
+      ]
+      const PRESERVED_SESSION_KEYS = [
+        'academia.token',
+        'academia.browser-session',
+      ]
+      const preservedLocal = new Map<string, string>()
+      for (const key of PRESERVED_LOCAL_KEYS) {
+        try {
+          const value = localStorage.getItem(key)
+          if (value !== null) preservedLocal.set(key, value)
+        } catch { /* storage unavailable — skip */ }
+      }
+      const preservedSession = new Map<string, string>()
+      for (const key of PRESERVED_SESSION_KEYS) {
+        try {
+          const value = sessionStorage.getItem(key)
+          if (value !== null) preservedSession.set(key, value)
+        } catch { /* storage unavailable — skip */ }
+      }
 
       localStorage.clear()
       sessionStorage.clear()
 
-      if (previousTheme) {
-        localStorage.setItem('theme', previousTheme)
+      for (const [key, value] of preservedLocal) {
+        try { localStorage.setItem(key, value) } catch { /* quota — skip */ }
+      }
+      for (const [key, value] of preservedSession) {
+        try { sessionStorage.setItem(key, value) } catch { /* quota — skip */ }
       }
       localStorage.setItem(APP_RUNTIME_VERSION_KEY, CURRENT_APP_VERSION)
       localStorage.setItem(APP_RUNTIME_BUILD_KEY, CURRENT_RUNTIME_BUILD)
@@ -3258,6 +3576,22 @@ export default function App() {
     hydrateProfile().catch(() => {})
   }, [loggedIn, hydrateProfile])
 
+  // Phase 9E: lazy-fetch the profile photo URL once per login. Cached in
+  // localStorage so subsequent loads do not re-hit Student_Profile_Report.
+  useEffect(() => {
+    if (!loggedIn) return
+    if (profilePhotoUrl) return
+    let disposed = false
+    fetchStudentPhotoUrl().then((url) => {
+      if (disposed) return
+      if (url) setProfilePhotoUrl(url)
+    }).catch(() => {
+      // Some students have no photo on file (HAR confirmed 404 on
+      // /profile/client/.../file). Silently fall back to initials avatar.
+    })
+    return () => { disposed = true }
+  }, [loggedIn, profilePhotoUrl])
+
   useEffect(() => {
     if (!loggedIn || screen !== 'profile') return
     hydrateProfile().catch(() => {})
@@ -3277,6 +3611,8 @@ export default function App() {
     if (email) localStorage.removeItem(getTabCacheStorageKey(email))
     if (email) localStorage.removeItem(getAttendanceSnapshotStorageKey(email))
     localStorage.removeItem('academia.student') // legacy key cleanup
+    localStorage.removeItem('academia.profilePhotoUrl')
+    setProfilePhotoUrl(null)
     setStudent(EMPTY_STUDENT)
     setAttendance([])
     setMarks([])
@@ -3304,6 +3640,24 @@ export default function App() {
     clearPollTimer()
   }, [clearPollTimer, setDayOrder])
 
+  // Silent re-auth before tearing down the session. Returns true when a fresh
+  // token is acquired and the caller should retry the failing request; false
+  // means the user must re-enter credentials.
+  const handleSessionExpired = useCallback(async (): Promise<boolean> => {
+    try {
+      const ok = await tryAutoRelogin()
+      if (ok) {
+        console.info('[session] Auto re-login succeeded')
+        return true
+      }
+    } catch (err) {
+      console.warn('[session] Auto re-login threw', err)
+    }
+    logoutUser().catch(() => {})
+    resetUserSessionState()
+    return false
+  }, [resetUserSessionState])
+
   useEffect(() => {
     if (!loggedIn) {
       setNotificationCount(0)
@@ -3322,8 +3676,15 @@ export default function App() {
       } catch (err) {
         const msg = (err as Error).message ?? ''
         if (msg.includes('Session expired') || msg.includes('Not authenticated')) {
-          logoutUser().catch(() => {})
-          resetUserSessionState()
+          const recovered = await handleSessionExpired()
+          if (recovered) {
+            // Token refreshed; reschedule a poll immediately.
+            if (!disposed) {
+              const delay = 1500
+              timer = window.setTimeout(() => { void run() }, delay)
+            }
+            return
+          }
           disposed = true
           return
         }
@@ -3354,7 +3715,7 @@ export default function App() {
       document.removeEventListener('visibilitychange', wake)
       window.removeEventListener('focus', wake)
     }
-  }, [loggedIn, resetUserSessionState])
+  }, [loggedIn, resetUserSessionState, handleSessionExpired])
 
   useEffect(() => {
     if (!loggedIn || !showAdminMetrics || screen !== 'profile') {
@@ -3379,8 +3740,7 @@ export default function App() {
         if (disposed) return
         const msg = (err as Error).message ?? ''
         if (msg.includes('Session expired') || msg.includes('Not authenticated')) {
-          logoutUser().catch(() => {})
-          resetUserSessionState()
+          void handleSessionExpired()
           disposed = true
           return
         }
@@ -3393,7 +3753,7 @@ export default function App() {
     return () => {
       disposed = true
     }
-  }, [loggedIn, showAdminMetrics, screen, resetUserSessionState])
+  }, [loggedIn, showAdminMetrics, screen, resetUserSessionState, handleSessionExpired])
 
   const syncAttendanceState = useCallback(async (opts?: { forceDayOrderFetch?: boolean; notifyOnChange?: boolean }) => {
     const nowTs = Date.now()
@@ -3477,8 +3837,12 @@ export default function App() {
       } catch (err) {
         const msg = (err as Error).message ?? ''
         if (msg.includes('Session expired') || msg.includes('Not authenticated')) {
-          logoutUser().catch(() => {})
-          resetUserSessionState()
+          const recovered = await handleSessionExpired()
+          if (recovered) {
+            // Retry the poll cycle on the fresh token.
+            pollRef.current = window.setTimeout(() => { void runPoll() }, 1200)
+            return
+          }
           disposed = true
           return
         }
@@ -3505,7 +3869,7 @@ export default function App() {
       document.removeEventListener('visibilitychange', wakePoll)
       window.removeEventListener('focus', wakePoll)
     }
-  }, [loggedIn, isOffline, syncAttendanceState, clearPollTimer, resetUserSessionState, timetableByDay])
+  }, [loggedIn, isOffline, syncAttendanceState, clearPollTimer, resetUserSessionState, handleSessionExpired, timetableByDay])
 
   // Academic planner calendar — fetch on demand when screen opens
   useEffect(() => {
@@ -3525,8 +3889,12 @@ export default function App() {
     } catch (err) {
       const msg = (err as Error).message ?? ''
       if (msg.includes('Session expired') || msg.includes('Not authenticated')) {
-        logoutUser().catch(() => {})
-        resetUserSessionState()
+        const recovered = await handleSessionExpired()
+        if (recovered) {
+          try {
+            await syncAttendanceState({ forceDayOrderFetch: true, notifyOnChange: true })
+          } catch { /* will surface in next poll */ }
+        }
       }
     } finally {
       setRefreshing(false)
@@ -3534,6 +3902,10 @@ export default function App() {
   }
 
   const handleLogout = useCallback(() => {
+    // Explicit user-initiated logout: drop persisted credentials and opt-out
+    // of auto re-login so the next visit starts at the email step.
+    clearCredentials()
+    setAutoReloginOptIn(false)
     logoutUser().catch(() => {})
     resetUserSessionState()
   }, [resetUserSessionState]) // all deps are stable setters or refs
@@ -3553,6 +3925,19 @@ export default function App() {
 
   if (isNotFoundRoute) {
     return <NotFoundScreen />
+  }
+
+  if (!loggedIn && bootAutoRelogin) {
+    // Silent re-login in flight from cold boot. Keep the login chrome quiet —
+    // show a minimal connecting state instead of flashing the full LoginScreen.
+    return (
+      <div className="login-screen" aria-busy="true">
+        <div className="login-hero">
+          <div className="login-title-big">Arch</div>
+          <div className="login-subtitle">Restoring your session…</div>
+        </div>
+      </div>
+    )
   }
 
   if (!loggedIn) return (
@@ -3589,6 +3974,14 @@ export default function App() {
       pollInFlightRef.current = false
       setLoggedEmail(email)
       setLoggedIn(true)
+      try {
+        const notice = sessionStorage.getItem('arch.loginNotice')
+        if (notice) {
+          sessionStorage.removeItem('arch.loginNotice')
+          setLoginNotice(notice)
+          window.setTimeout(() => setLoginNotice(""), 6000)
+        }
+      } catch { /* ignore */ }
     }} />
   )
 
@@ -3689,6 +4082,12 @@ export default function App() {
     <div className={screen === 'cooking' ? 'app cooking-mode' : 'app'}>
       {/* Content */}
       <main className={screen === 'cooking' ? 'page-content cooking-page-content' : 'page-content'}>
+        {loginNotice && (
+          <div role="status" className="arch-login-notice">
+            <span>{loginNotice}</span>
+            <button type="button" aria-label="Dismiss" onClick={() => setLoginNotice("")}>×</button>
+          </div>
+        )}
         {/* PWA banner — Android */}
         {screen !== 'cooking' && showPwa && (
           <div className="pwa-banner">
@@ -3785,6 +4184,7 @@ export default function App() {
         {screen === "profile" && (
           <ProfileScreen
             student={student}
+            photoUrl={profilePhotoUrl}
             theme={theme}
             onTheme={handleTheme}
             onLogout={handleLogout}
@@ -3846,6 +4246,19 @@ export default function App() {
             clearFloatingDragState()
           }}
           trailing={(
+            <>
+            <div className="sidebar-user-section">
+              <div className="sidebar-user-sep" />
+              <div className="sidebar-user-row">
+                <div className="sidebar-user-avatar">
+                  {(toTitle(firstName(student.name || fallbackName)) || '?')[0]}
+                </div>
+                <div className="sidebar-user-info">
+                  <span className="sidebar-user-name">{toTitle(firstName(student.name || fallbackName))}</span>
+                  <span className="sidebar-user-reg">{student.regNo || loggedEmail.split('@')[0]}</span>
+                </div>
+              </div>
+            </div>
             <div ref={globalQuickMenuRef} className={`global-smooth-menu${globalQuickMenuOpen ? ' open' : ''}`}>
               <button
                 className="global-smooth-trigger"
@@ -3932,6 +4345,7 @@ export default function App() {
                 })}
               </div>
             </div>
+            </>
           )}
         />
       )}
