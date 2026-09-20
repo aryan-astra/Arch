@@ -55,7 +55,11 @@ const WHITELIST = [
 
 const EXCLUDED_FILES = [
   'scan-pii.js',
-  'HAR file',
+  // HAR captures are gitignored local debug artifacts (*.har in .gitignore).
+  // They intentionally contain real upstream payloads, so content-scanning
+  // them only produces noise. Tracking protection is enforced separately via
+  // `git ls-files | findstr .har` (must be empty) — see readme/hosting.md.
+  '.har',
   'test-',
   '.md',
 ];
