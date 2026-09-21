@@ -116,7 +116,8 @@ function extractSlotTokens(slotRaw: string): string[] {
 }
 
 // Parses the My_Attendance page HTML (data is embedded in a JS pageSanitizer.sanitize() string)
-function parseAttendancePage(html: string): LiveAttendanceResult {
+// Exported for unit testing against sanitized fixtures (see src/lib/__fixtures__).
+export function parseAttendancePage(html: string): LiveAttendanceResult {
   const innerHtml = extractInnerHtml(html)
   const parser = new DOMParser()
   const doc = parser.parseFromString(innerHtml, 'text/html')
@@ -921,7 +922,8 @@ function classifyCalendarType(title: string): AcademicCalendarEvent['type'] {
   return 'event'
 }
 
-function parsePlannerEvents(html: string, semester: 'odd' | 'even'): AcademicCalendarEvent[] {
+// Exported for unit testing against sanitized fixtures.
+export function parsePlannerEvents(html: string, semester: 'odd' | 'even'): AcademicCalendarEvent[] {
   const plannerHtml = extractPlannerInnerHtml(html)
   const parser = new DOMParser()
   const doc = parser.parseFromString(plannerHtml, 'text/html')
